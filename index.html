@@ -173,6 +173,14 @@
     </details>
   </div>
 
+  //IP Test
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/2.2.4/jquery.min.js">
+    $.getJSON('https://api.ipify.org?format=jsonp&callback=?', function(data) 
+    {
+      console.log(JSON.stringify(data, null, 2));
+    });
+  </script>
+  
   <script>/*!
 Parts of this script are from the TurboWarp Packager <https://packager.turbowarp.org/>, licensed as follows:
 Copyright (C) 2021-2022 Thomas Weber
