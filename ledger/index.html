@@ -3262,14 +3262,30 @@ ReactDOM.createRoot(document.getElementById("root")).render(<LedgerErrorBoundary
   let lastSpriteFrame = 0;
 
   const nekoEl = document.createElement("div");
+  const spriteEl = document.createElement("div");
   const overlayEl = document.createElement("div");
+
+  /* Dark colors get inverted (white) outlines so the cat stays visible on dark
+     backgrounds; light colors keep the classic black outlines. */
+  function colorIsDark(hex) {
+    let h = String(hex || "").replace("#", "");
+    if (h.length === 3) h = h.split("").map(c => c + c).join("");
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return false;
+    const n = parseInt(h, 16);
+    const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    return (r * 0.299 + g * 0.587 + b * 0.114) < 128;
+  }
 
   function applyColorMode() {
     if (currentColor) {
       overlayEl.style.display = "block";
       overlayEl.style.backgroundColor = currentColor;
+      const dark = colorIsDark(currentColor);
+      spriteEl.style.filter = dark ? "invert(1)" : "none";
+      overlayEl.style.mixBlendMode = dark ? "screen" : "multiply";
     } else {
       overlayEl.style.display = "none";
+      spriteEl.style.filter = "none";
     }
   }
 
@@ -3285,11 +3301,16 @@ ReactDOM.createRoot(document.getElementById("root")).render(<LedgerErrorBoundary
     nekoEl.style.top = `${nekoPosY - 16}px`;
     nekoEl.style.zIndex = 2147483647;
     nekoEl.style.display = catEnabled ? "" : "none";
-    nekoEl.style.isolation = "isolate";               // NEW — keeps blending confined to this element
-    nekoEl.style.backgroundImage = `url(${nekoFile})`; // always the plain sprite, black lines intact
-    nekoEl.style.backgroundRepeat = "no-repeat";
+    nekoEl.style.isolation = "isolate";               // keeps blending confined to this element
 
-    overlayEl.style.position = "absolute";             // NEW overlay, masked to the same sprite
+    spriteEl.style.position = "absolute";              // plain sprite layer (black lines intact)
+    spriteEl.style.inset = "0";
+    spriteEl.style.pointerEvents = "none";
+    spriteEl.style.imageRendering = "pixelated";
+    spriteEl.style.backgroundImage = `url(${nekoFile})`;
+    spriteEl.style.backgroundRepeat = "no-repeat";
+
+    overlayEl.style.position = "absolute";             // tint overlay, masked to the same sprite
     overlayEl.style.inset = "0";
     overlayEl.style.pointerEvents = "none";
     overlayEl.style.mixBlendMode = "multiply";
@@ -3299,6 +3320,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(<LedgerErrorBoundary
     overlayEl.style.maskRepeat = "no-repeat";
 
     applyColorMode();
+    nekoEl.appendChild(spriteEl);
     nekoEl.appendChild(overlayEl);
     document.body.appendChild(nekoEl);
 
@@ -3343,7 +3365,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(<LedgerErrorBoundary
     lastSpriteFrame = frame;
     const sprite = spriteSets[name][frame % spriteSets[name].length];
     const pos = `${sprite[0] * 32}px ${sprite[1] * 32}px`;
-    nekoEl.style.backgroundPosition = pos;
+    spriteEl.style.backgroundPosition = pos;
     overlayEl.style.webkitMaskPosition = pos;  // keep overlay aligned to the same frame
     overlayEl.style.maskPosition = pos;
   }
