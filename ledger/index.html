@@ -1431,6 +1431,10 @@ function App(){
     }catch(e){console.warn("applyRemote failed:",e)}
   },[]);
 
+  /* Push only when the synced state actually differs from the last successful
+     push — a byte-level comparison means no-op echoes and re-renders never
+     write to Firestore. */
+  const lastPushedJsonRef=useRef(null);
   const pushSync=useCallback(uid=>{
     try{
       if(!FIREBASE_CONFIGURED||!fbFS||!uid)return;
@@ -1444,14 +1448,27 @@ function App(){
         prefs:firestoreSafe(sanitizePrefs(s.prefs||{})),
         theme:firestoreSafe(s.theme||{}),
         savedTheme:firestoreSafe(savedThemeRef.current),
-        // Server timestamps keep ordering consistent across devices (client clocks can drift).
-        // NOTE: never pass this sentinel through firestoreSafe — it would be
-        // flattened into a plain object and stored as garbage.
-        updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
       };
+      const json=JSON.stringify(payload);
+      if(json===lastPushedJsonRef.current)return; // nothing changed since the last write — skip
+      lastPushedJsonRef.current=json;
+      // Server timestamps keep ordering consistent across devices (client clocks can drift).
+      // NOTE: never pass this sentinel through firestoreSafe — it would be
+      // flattened into a plain object and stored as garbage.
+      payload.updatedAt=firebase.firestore.FieldValue.serverTimestamp();
       fbFS.doc('ledger/'+uid).set(payload).then(()=>{setSyncError(false);setSyncErrorMsg("");setLastSyncedAt(Date.now())}).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))});
     }catch(e){console.warn("Sync push failed:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))}
   },[]);
+
+  /* Snapshot-driven pushes (repair/seed paths) go through a cooldown so that no
+     feedback loop between devices can ever firehose Firestore writes. */
+  const lastSyncPushRef=useRef(0);
+  const safePushSync=useCallback(uid=>{
+    const now=Date.now();
+    if(now-lastSyncPushRef.current<3000)return;
+    lastSyncPushRef.current=now;
+    pushSync(uid);
+  },[pushSync]);
 
   /* Listen for auth changes — sign-in/out drives the whole sync loop. */
   useEffect(()=>{
@@ -1497,26 +1514,26 @@ function App(){
             // a plain object instead of a server timestamp. Preserve whatever data
             // exists: pull real cloud data if this device is fresh, otherwise
             // re-save this device's copy with a proper timestamp.
-            if(cloudLooksDefault||localHasData){pushSync(uid)}
+            if(cloudLooksDefault||localHasData){safePushSync(uid)}
             else{skipNextPushRef.current=true;applyRemote(data)}
           }else if(remoteAt<last){
-            pushSync(uid); // cloud copy is older — restore it from this device
+            safePushSync(uid); // cloud copy is older — restore it from this device
           }
         }else{
-          pushSync(uid); // first time on this account — seed the cloud with local data
+          safePushSync(uid); // first time on this account — seed the cloud with local data
         }
         syncedRef.current=uid;
       },e=>{console.warn("Sync listener error:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))});
     }catch(e){console.warn("Sync subscribe failed:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))}
     return ()=>{if(unsub)unsub()};
-  },[authUser,applyRemote,pushSync,showToast]);
+  },[authUser,applyRemote,pushSync,safePushSync,showToast]);
 
   /* Debounced push whenever any synced slice changes locally. */
   useEffect(()=>{
     if(skipNextPushRef.current){skipNextPushRef.current=false;return}
     if(!FIREBASE_CONFIGURED||!authUser||syncedRef.current!==authUser.uid)return;
     if(pushTimerRef.current)clearTimeout(pushTimerRef.current);
-    pushTimerRef.current=setTimeout(()=>pushSync(authUser.uid),600);
+    pushTimerRef.current=setTimeout(()=>pushSync(authUser.uid),1500);
     return ()=>clearTimeout(pushTimerRef.current);
   },[expenses,topUps,settings,categories,catBudgets,prefs,theme,authUser,pushSync]);
 
