@@ -1422,7 +1422,7 @@ function App(){
       savedTheme:savedThemeRef.current,
       updatedAt:T,
     };
-    fbFS.doc('ledger',uid).set(payload).then(()=>{setLastSync(uid,T);setSyncError(false)}).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true)});
+    fbFS.doc('ledger/'+uid).set(payload).then(()=>{setLastSync(uid,T);setSyncError(false)}).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true)});
   },[]);
 
   /* Listen for auth changes — sign-in/out drives the whole sync loop. */
@@ -1440,7 +1440,7 @@ function App(){
   useEffect(()=>{
     if(!FIREBASE_CONFIGURED||!authUser||!fbInit())return;
     const uid=authUser.uid;
-    const unsub=fbFS.doc('ledger',uid).onSnapshot(snap=>{
+    const unsub=fbFS.doc('ledger/'+uid).onSnapshot(snap=>{
       if(snap.exists()){
         const data=snap.data();
         const last=getLastSync(uid);
