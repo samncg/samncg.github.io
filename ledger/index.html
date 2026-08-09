@@ -1139,6 +1139,20 @@ const setLastSync=(uid,t)=>{const o=store.get("ledger-synclast")||{};o[uid]=t;st
 /* Wallpaper / card-panel images are base64 and can exceed Firestore's 1 MiB
    document limit, so keep them off the cloud — they stay device-local. */
 const sanitizePrefs=p=>{const clean={...p};delete clean.wallpaper;delete clean.cardPanel;return clean};
+/* Strip undefined values (Firestore rejects them) — imported backups or older
+   entries can carry undefined fields. */
+const firestoreSafe=o=>{
+  if(Array.isArray(o))return o.map(firestoreSafe);
+  if(o&&typeof o==='object'){
+    const out={};
+    for(const k of Object.keys(o)){
+      const v=firestoreSafe(o[k]);
+      if(v!==undefined)out[k]=v;
+    }
+    return out;
+  }
+  return o;
+};
 
 /* ═══════════════════════════════════════════
    CONFIRM
@@ -1408,21 +1422,23 @@ function App(){
   },[]);
 
   const pushSync=useCallback(uid=>{
-    if(!FIREBASE_CONFIGURED||!fbFS||!uid)return;
-    const s=stateRef.current||{};
-    const T=Date.now();
-    const payload={
-      expenses:s.expenses||[],
-      topUps:s.topUps||[],
-      settings:s.settings||null,
-      cats:s.categories||DEFAULT_CATS,
-      catBudgets:s.catBudgets||{},
-      prefs:sanitizePrefs(s.prefs||{}),
-      theme:s.theme||{},
-      savedTheme:savedThemeRef.current,
-      updatedAt:T,
-    };
-    fbFS.doc('ledger/'+uid).set(payload).then(()=>{setLastSync(uid,T);setSyncError(false)}).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true)});
+    try{
+      if(!FIREBASE_CONFIGURED||!fbFS||!uid)return;
+      const s=stateRef.current||{};
+      const payload={
+        expenses:s.expenses||[],
+        topUps:s.topUps||[],
+        settings:s.settings||null,
+        cats:s.categories||DEFAULT_CATS,
+        catBudgets:s.catBudgets||{},
+        prefs:sanitizePrefs(s.prefs||{}),
+        theme:s.theme||{},
+        savedTheme:savedThemeRef.current,
+        // Server timestamps keep ordering consistent across devices (client clocks can drift).
+        updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
+      };
+      fbFS.doc('ledger/'+uid).set(firestoreSafe(payload)).then(()=>setSyncError(false)).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true)});
+    }catch(e){console.warn("Sync push failed:",e);setSyncError(true)}
   },[]);
 
   /* Listen for auth changes — sign-in/out drives the whole sync loop. */
@@ -1440,34 +1456,39 @@ function App(){
   useEffect(()=>{
     if(!FIREBASE_CONFIGURED||!authUser||!fbInit())return;
     const uid=authUser.uid;
-    const unsub=fbFS.doc('ledger/'+uid).onSnapshot(snap=>{
-      if(snap.exists()){
-        const data=snap.data();
-        const last=getLastSync(uid);
-        const remoteAt=data.updatedAt||0;
-        if(remoteAt>last){
-          const local=stateRef.current||{};
-          const localHasData=!!local.settings||(Array.isArray(local.expenses)&&local.expenses.length>0)||(Array.isArray(local.topUps)&&local.topUps.length>0);
-          const cloudLooksDefault=!(Array.isArray(data.expenses)&&data.expenses.length>0)&&!(Array.isArray(data.topUps)&&data.topUps.length>0)&&!data.settings;
-          if(cloudLooksDefault&&localHasData){
-            // The cloud copy is an empty/default state (e.g. seeded before setup).
-            // Never let it replace real local data — push the real copy up instead.
-            pushSync(uid);
-          }else{
-            skipNextPushRef.current=true; // don't echo what we just applied back to the cloud
-            applyRemote(data);
-            setLastSync(uid,remoteAt);
-            showToast("Synced from cloud.","success");
+    let unsub=null;
+    try{
+      unsub=fbFS.doc('ledger/'+uid).onSnapshot(snap=>{
+        if(snap.exists()){
+          const data=snap.data();
+          const last=getLastSync(uid);
+          const at=data.updatedAt;
+          // Support both server timestamps and the old numeric format.
+          const remoteAt=at&&typeof at.toMillis==='function'?at.toMillis():(typeof at==='number'?at:0);
+          if(remoteAt>last){
+            const local=stateRef.current||{};
+            const localHasData=!!local.settings||(Array.isArray(local.expenses)&&local.expenses.length>0)||(Array.isArray(local.topUps)&&local.topUps.length>0);
+            const cloudLooksDefault=!(Array.isArray(data.expenses)&&data.expenses.length>0)&&!(Array.isArray(data.topUps)&&data.topUps.length>0)&&!data.settings;
+            if(cloudLooksDefault&&localHasData){
+              // The cloud copy is an empty/default state (e.g. seeded before setup).
+              // Never let it replace real local data — push the real copy up instead.
+              pushSync(uid);
+            }else{
+              skipNextPushRef.current=true; // don't echo what we just applied back to the cloud
+              applyRemote(data);
+              setLastSync(uid,remoteAt);
+              if(last===0)showToast("Synced from cloud.","success"); // announce the first pull only, not our own echoes
+            }
+          }else if(remoteAt<last){
+            pushSync(uid); // cloud copy is older — restore it from this device
           }
-        }else if(remoteAt<last){
-          pushSync(uid); // cloud copy is older — restore it from this device
+        }else{
+          pushSync(uid); // first time on this account — seed the cloud with local data
         }
-      }else{
-        pushSync(uid); // first time on this account — seed the cloud with local data
-      }
-      syncedRef.current=uid;
-    },e=>{console.warn("Sync listener error:",e);setSyncError(true)});
-    return ()=>unsub();
+        syncedRef.current=uid;
+      },e=>{console.warn("Sync listener error:",e);setSyncError(true)});
+    }catch(e){console.warn("Sync subscribe failed:",e);setSyncError(true)}
+    return ()=>{if(unsub)unsub()};
   },[authUser,applyRemote,pushSync,showToast]);
 
   /* Debounced push whenever any synced slice changes locally. */
@@ -1959,7 +1980,13 @@ function App(){
   /* ─── Keyboard ─── */
   useEffect(()=>{
     const handler=e=>{
-      if(e.key==='Escape'&&editingId){cancelEdit();return}
+      if(e.key==='Escape'){
+        if(editingId){cancelEdit();return}
+        if(showCmd){setShowCmd(false);return}
+        if(showDrawer){setShowDrawer(false);return}
+        if(showSetup){setShowSetup(false);return}
+        if(showTopUp){setShowTopUp(false);return}
+      }
       const meta=e.ctrlKey||e.metaKey;
       if(meta&&e.key.toLowerCase()==='k'){e.preventDefault();setShowCmd(true)}
       if(meta&&e.key.toLowerCase()==='n'&&settings){e.preventDefault();document.querySelector('.amount-field')?.focus()}
@@ -1970,7 +1997,15 @@ function App(){
     };
     window.addEventListener('keydown',handler);
     return()=>window.removeEventListener('keydown',handler);
-  },[editingId,settings]);
+  },[editingId,settings,showDrawer,showSetup,showTopUp,showCmd]);
+
+  /* Lock background scroll while any overlay is open (helps on mobile). */
+  useEffect(()=>{
+    const locked=showDrawer||showSetup||showTopUp||showCmd||!!confirm;
+    const prev=document.body.style.overflow;
+    document.body.style.overflow=locked?'hidden':'';
+    return()=>{document.body.style.overflow=prev};
+  },[showDrawer,showSetup,showTopUp,showCmd,confirm]);
 
   /* ═══════════════════════════════════════════
      RENDER
@@ -2396,7 +2431,7 @@ function App(){
             <button className="icon-btn" onClick={toggleLightDark} title="Toggle light/dark" aria-label="Toggle theme">
               {isDark?<I.Sun/>:<I.Moon/>}
             </button>
-            <button className="icon-btn" onClick={()=>{setDrawerTab('theme');setShowDrawer(true)}} title="Customize" aria-label="Customize">
+            <button className="icon-btn" onClick={()=>{setShowDrawer(open=>!open);if(!showDrawer)setDrawerTab('theme')}} title="Customize" aria-label="Customize">
               <I.Palette/>
             </button>
           </div>
