@@ -1144,8 +1144,9 @@ const getLastSync=uid=>{
 };
 const setLastSync=(uid,t)=>{const o=store.get("ledger-synclast2")||{};o[uid]=t;store.set("ledger-synclast2",o)};
 /* Wallpaper / card-panel images are base64 and can exceed Firestore's 1 MiB
-   document limit, so keep them off the cloud — they stay device-local. */
-const sanitizePrefs=p=>{const clean={...p};delete clean.wallpaper;delete clean.cardPanel;return clean};
+   document limit, so they — and their settings (dim, blur, panel strength) —
+   stay device-local and never sync. */
+const sanitizePrefs=p=>{const clean={...p};delete clean.wallpaper;delete clean.wallpaperDim;delete clean.wallBlur;delete clean.cardPanel;delete clean.cardPanelOpacity;return clean};
 /* Strip undefined values (Firestore rejects them) — imported backups or older
    entries can carry undefined fields. */
 const firestoreSafe=o=>{
@@ -1415,6 +1416,7 @@ function App(){
         for(const k of Object.keys(data.prefs)){
           if(k==='customFonts'||k==='cardOrder'){if(Array.isArray(data.prefs[k]))next[k]=data.prefs[k]}
           else if(k==='compact'||k==='groupHistory'||k==='catEnabled')next[k]=!!data.prefs[k]
+          else if(k==='wallpaper'||k==='wallpaperDim'||k==='wallBlur'||k==='cardPanel'||k==='cardPanelOpacity'){/* device-local — never apply from the cloud */}
           else next[k]=data.prefs[k];
         }
         for(const k of ['pieThickness','pieGap','uiBlur','uiOpacity','wallBlur','cardPanelOpacity','wallpaperDim','weatherSpeed']){
