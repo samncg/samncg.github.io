@@ -1335,6 +1335,7 @@ function App(){
   const[scrolled,setScrolled]=useState(false);
   const[authUser,setAuthUser]=useState(null);
   const[syncError,setSyncError]=useState(false);
+  const[syncErrorMsg,setSyncErrorMsg]=useState("");
   const[lastSyncedAt,setLastSyncedAt]=useState(0);
 
   const prefsRef=useRef(prefs);useEffect(()=>{prefsRef.current=prefs},[prefs]);
@@ -1435,19 +1436,21 @@ function App(){
       if(!FIREBASE_CONFIGURED||!fbFS||!uid)return;
       const s=stateRef.current||{};
       const payload={
-        expenses:s.expenses||[],
-        topUps:s.topUps||[],
-        settings:s.settings||null,
-        cats:s.categories||DEFAULT_CATS,
-        catBudgets:s.catBudgets||{},
-        prefs:sanitizePrefs(s.prefs||{}),
-        theme:s.theme||{},
-        savedTheme:savedThemeRef.current,
+        expenses:firestoreSafe(s.expenses||[]),
+        topUps:firestoreSafe(s.topUps||[]),
+        settings:firestoreSafe(s.settings||null),
+        cats:firestoreSafe(s.categories||DEFAULT_CATS),
+        catBudgets:firestoreSafe(s.catBudgets||{}),
+        prefs:firestoreSafe(sanitizePrefs(s.prefs||{})),
+        theme:firestoreSafe(s.theme||{}),
+        savedTheme:firestoreSafe(savedThemeRef.current),
         // Server timestamps keep ordering consistent across devices (client clocks can drift).
+        // NOTE: never pass this sentinel through firestoreSafe — it would be
+        // flattened into a plain object and stored as garbage.
         updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
       };
-      fbFS.doc('ledger/'+uid).set(firestoreSafe(payload)).then(()=>{setSyncError(false);setLastSyncedAt(Date.now())}).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true)});
-    }catch(e){console.warn("Sync push failed:",e);setSyncError(true)}
+      fbFS.doc('ledger/'+uid).set(payload).then(()=>{setSyncError(false);setSyncErrorMsg("");setLastSyncedAt(Date.now())}).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))});
+    }catch(e){console.warn("Sync push failed:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))}
   },[]);
 
   /* Listen for auth changes — sign-in/out drives the whole sync loop. */
@@ -1456,7 +1459,7 @@ function App(){
     if(!fbInit())return;
     const unsub=fbAuth.onAuthStateChanged(user=>{
       setAuthUser(user?{uid:user.uid,name:user.displayName,email:user.email,photo:user.photoURL}:null);
-      if(!user)setSyncError(false);
+      if(!user){setSyncError(false);setSyncErrorMsg("")}
     });
     return ()=>unsub();
   },[]);
@@ -1471,13 +1474,13 @@ function App(){
         if(snap.exists){ // `exists` is a boolean property on DocumentSnapshot (v9+), not a method
           const data=snap.data();
           const last=getLastSync(uid);
+          const local=stateRef.current||{};
+          const localHasData=!!local.settings||(Array.isArray(local.expenses)&&local.expenses.length>0)||(Array.isArray(local.topUps)&&local.topUps.length>0);
+          const cloudLooksDefault=!(Array.isArray(data.expenses)&&data.expenses.length>0)&&!(Array.isArray(data.topUps)&&data.topUps.length>0)&&!data.settings;
           const at=data.updatedAt;
           // Support both server timestamps and the old numeric format.
           const remoteAt=at&&typeof at.toMillis==='function'?at.toMillis():(typeof at==='number'?at:0);
           if(remoteAt>last){
-            const local=stateRef.current||{};
-            const localHasData=!!local.settings||(Array.isArray(local.expenses)&&local.expenses.length>0)||(Array.isArray(local.topUps)&&local.topUps.length>0);
-            const cloudLooksDefault=!(Array.isArray(data.expenses)&&data.expenses.length>0)&&!(Array.isArray(data.topUps)&&data.topUps.length>0)&&!data.settings;
             if(cloudLooksDefault&&localHasData){
               // The cloud copy is an empty/default state (e.g. seeded before setup).
               // Never let it replace real local data — push the real copy up instead.
@@ -1489,6 +1492,13 @@ function App(){
               setLastSyncedAt(remoteAt);
               if(last===0)showToast("Synced from cloud.","success"); // announce the first pull only, not our own echoes
             }
+          }else if(remoteAt===0){
+            // Unreadable timestamp — docs written by an earlier buggy build stored
+            // a plain object instead of a server timestamp. Preserve whatever data
+            // exists: pull real cloud data if this device is fresh, otherwise
+            // re-save this device's copy with a proper timestamp.
+            if(cloudLooksDefault||localHasData){pushSync(uid)}
+            else{skipNextPushRef.current=true;applyRemote(data)}
           }else if(remoteAt<last){
             pushSync(uid); // cloud copy is older — restore it from this device
           }
@@ -1496,8 +1506,8 @@ function App(){
           pushSync(uid); // first time on this account — seed the cloud with local data
         }
         syncedRef.current=uid;
-      },e=>{console.warn("Sync listener error:",e);setSyncError(true)});
-    }catch(e){console.warn("Sync subscribe failed:",e);setSyncError(true)}
+      },e=>{console.warn("Sync listener error:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))});
+    }catch(e){console.warn("Sync subscribe failed:",e);setSyncError(true);setSyncErrorMsg(String(e&&e.message||e))}
     return ()=>{if(unsub)unsub()};
   },[authUser,applyRemote,pushSync,showToast]);
 
@@ -3021,8 +3031,14 @@ function App(){
                             <div style={{flex:1,minWidth:0}}>
                               <div style={{fontSize:13,fontWeight:600,color:'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{authUser.name||authUser.email||'Signed in'}</div>
                               <div style={{fontSize:11.5,color:syncError?'var(--negative)':'var(--text-muted)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                                {syncError?'Sync error — will retry automatically':(authUser.email||'')}
+                                {syncError?(syncErrorMsg||'Sync error — will retry automatically'):(authUser.email||'')}
                               </div>
+                              {!syncError&&authUser.uid&&(
+                                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:1,fontFamily:'var(--font-mono,monospace)'}}>Account ID {String(authUser.uid).slice(0,8)}…</div>
+                              )}
+                              {syncError&&syncErrorMsg&&(
+                                <div style={{fontSize:10.5,color:'var(--negative)',marginTop:2,wordBreak:'break-word'}}>{syncErrorMsg}</div>
+                              )}
                               {!syncError&&lastSyncedAt>0&&(
                                 <div style={{fontSize:10.5,color:'var(--text-muted)',marginTop:2}}>Last synced {new Date(lastSyncedAt).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}</div>
                               )}
