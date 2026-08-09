@@ -1133,9 +1133,16 @@ const fbInit=()=>{
   }catch(e){console.warn("Firebase init failed:",e);return false}
 };
 /* Per-account timestamp of the last write this device pushed, so a doc that is
-   older than what we already have isn't applied over newer local data. */
-const getLastSync=uid=>{const o=store.get("ledger-synclast")||{};return o[uid]||0};
-const setLastSync=(uid,t)=>{const o=store.get("ledger-synclast")||{};o[uid]=t;store.set("ledger-synclast",o)};
+   older than what we already have isn't applied over newer local data.
+   Uses a versioned key: older builds stored client-clock timestamps, which can
+   be skewed (especially on phones) and would permanently block syncing. */
+const getLastSync=uid=>{
+  const o=store.get("ledger-synclast2")||{};
+  let t=o[uid]||0;
+  if(t>Date.now()+60000){delete o[uid];store.set("ledger-synclast2",o);t=0} // impossible future value = stale skew
+  return t;
+};
+const setLastSync=(uid,t)=>{const o=store.get("ledger-synclast2")||{};o[uid]=t;store.set("ledger-synclast2",o)};
 /* Wallpaper / card-panel images are base64 and can exceed Firestore's 1 MiB
    document limit, so keep them off the cloud — they stay device-local. */
 const sanitizePrefs=p=>{const clean={...p};delete clean.wallpaper;delete clean.cardPanel;return clean};
@@ -1328,6 +1335,7 @@ function App(){
   const[scrolled,setScrolled]=useState(false);
   const[authUser,setAuthUser]=useState(null);
   const[syncError,setSyncError]=useState(false);
+  const[lastSyncedAt,setLastSyncedAt]=useState(0);
 
   const prefsRef=useRef(prefs);useEffect(()=>{prefsRef.current=prefs},[prefs]);
   const pushTimerRef=useRef(null);
@@ -1412,6 +1420,7 @@ function App(){
           const n=parseFloat(next[k]);if(isFinite(n))next[k]=n;
         }
         setPrefs(next);store.set("ledger-prefs",next);
+        (next.customFonts||[]).forEach(f=>{if(f&&f.name)loadGoogleFont(f.name)});
       }
       if(data.theme&&typeof data.theme==='object'&&!Array.isArray(data.theme)){
         const next={...DEFAULT_THEME,...data.theme};
@@ -1437,7 +1446,7 @@ function App(){
         // Server timestamps keep ordering consistent across devices (client clocks can drift).
         updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
       };
-      fbFS.doc('ledger/'+uid).set(firestoreSafe(payload)).then(()=>setSyncError(false)).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true)});
+      fbFS.doc('ledger/'+uid).set(firestoreSafe(payload)).then(()=>{setSyncError(false);setLastSyncedAt(Date.now())}).catch(e=>{console.warn("Sync push failed:",e);setSyncError(true)});
     }catch(e){console.warn("Sync push failed:",e);setSyncError(true)}
   },[]);
 
@@ -1477,6 +1486,7 @@ function App(){
               skipNextPushRef.current=true; // don't echo what we just applied back to the cloud
               applyRemote(data);
               setLastSync(uid,remoteAt);
+              setLastSyncedAt(remoteAt);
               if(last===0)showToast("Synced from cloud.","success"); // announce the first pull only, not our own echoes
             }
           }else if(remoteAt<last){
@@ -3013,6 +3023,9 @@ function App(){
                               <div style={{fontSize:11.5,color:syncError?'var(--negative)':'var(--text-muted)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                                 {syncError?'Sync error — will retry automatically':(authUser.email||'')}
                               </div>
+                              {!syncError&&lastSyncedAt>0&&(
+                                <div style={{fontSize:10.5,color:'var(--text-muted)',marginTop:2}}>Last synced {new Date(lastSyncedAt).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}</div>
+                              )}
                             </div>
                             <button className="btn btn-ghost btn-sm" onClick={signOutGoogle}>Sign out</button>
                           </div>
