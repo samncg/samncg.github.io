@@ -1095,7 +1095,9 @@ const PREF_DEFAULTS={
    1. Create a project at https://console.firebase.google.com
    2. Add a web app and paste its config into FIREBASE_CONFIG below.
    3. In Authentication → Sign-in method, enable "Google".
-   4. In Firestore Database, create a database and add these security rules:
+   4. In Authentication → Settings → Authorized domains, add the domain the
+      app is served from (e.g. yourusername.github.io).
+   5. In Firestore Database, create a database and add these security rules:
         rules_version = '2';
         service cloud.firestore {
           match /databases/{database}/documents {
@@ -1104,7 +1106,7 @@ const PREF_DEFAULTS={
             }
           }
         }
-   5. Serve this file over http(s) — Google sign-in doesn't work on file:// URLs.
+   6. Serve this file over http(s) — Google sign-in doesn't work on file:// URLs.
       Any static host works (Firebase Hosting, GitHub Pages, `python -m http.server`).
    ═══════════════════════════════════════════ */
    // For Firebase JS SDK v7.20.0 and later, measurementId is optional
@@ -1375,16 +1377,34 @@ function App(){
   const savedThemeRef=useRef(savedTheme);useEffect(()=>{savedThemeRef.current=savedTheme},[savedTheme]);
   const skipNextPushRef=useRef(false);
 
-  /* Apply a cloud copy to local state (and localStorage, so it survives offline). */
+  /* Apply a cloud copy to local state (and localStorage, so it survives offline).
+     Every field is shape-checked so a stale or malformed cloud doc can never
+     crash the renderer or clobber the local setup with defaults. */
   const applyRemote=useCallback(data=>{
-    if(Array.isArray(data.expenses)){setExpenses(data.expenses);store.set("ledger-expenses",data.expenses)}
-    if(Array.isArray(data.topUps)){setTopUps(data.topUps);store.set("ledger-topups",data.topUps)}
-    if(data.settings!==undefined){setSettings(data.settings);store.set("ledger-settings",data.settings)}
-    if(Array.isArray(data.cats)){setCategories(data.cats);store.set("ledger-cats",data.cats)}
-    if(data.catBudgets){setCatBudgets(data.catBudgets);store.set("ledger-catbudgets",data.catBudgets)}
-    if(data.prefs){const next={...PREF_DEFAULTS,...prefsRef.current,...data.prefs};setPrefs(next);store.set("ledger-prefs",next)}
-    if(data.theme){const next={...DEFAULT_THEME,...data.theme};setTheme(next);store.set("ledger-theme",next)}
-    if(data.savedTheme!==undefined){setSavedTheme(data.savedTheme);store.set("ledger-theme-saved",data.savedTheme)}
+    try{
+      if(Array.isArray(data.expenses)&&data.expenses.every(e=>e&&typeof e.amount==='number'&&typeof e.date==='string')){setExpenses(data.expenses);store.set("ledger-expenses",data.expenses)}
+      if(Array.isArray(data.topUps)&&data.topUps.every(t=>t&&typeof t.amount==='number'&&typeof t.date==='string')){setTopUps(data.topUps);store.set("ledger-topups",data.topUps)}
+      if(data.settings&&typeof data.settings==='object'&&!Array.isArray(data.settings)&&typeof data.settings.monthlyBudget==='number'&&typeof data.settings.periodDays==='number'&&typeof data.settings.startDate==='string'){setSettings(data.settings);store.set("ledger-settings",data.settings)}
+      if(Array.isArray(data.cats)&&data.cats.every(c=>c&&typeof c.id==='string'&&typeof c.label==='string')){setCategories(data.cats);store.set("ledger-cats",data.cats)}
+      if(data.catBudgets&&typeof data.catBudgets==='object'&&!Array.isArray(data.catBudgets)){setCatBudgets(data.catBudgets);store.set("ledger-catbudgets",data.catBudgets)}
+      if(data.prefs&&typeof data.prefs==='object'&&!Array.isArray(data.prefs)){
+        const next={...PREF_DEFAULTS,...prefsRef.current};
+        for(const k of Object.keys(data.prefs)){
+          if(k==='customFonts'||k==='cardOrder'){if(Array.isArray(data.prefs[k]))next[k]=data.prefs[k]}
+          else if(k==='compact'||k==='groupHistory'||k==='catEnabled')next[k]=!!data.prefs[k]
+          else next[k]=data.prefs[k];
+        }
+        for(const k of ['pieThickness','pieGap','uiBlur','uiOpacity','wallBlur','cardPanelOpacity','wallpaperDim','weatherSpeed']){
+          const n=parseFloat(next[k]);if(isFinite(n))next[k]=n;
+        }
+        setPrefs(next);store.set("ledger-prefs",next);
+      }
+      if(data.theme&&typeof data.theme==='object'&&!Array.isArray(data.theme)){
+        const next={...DEFAULT_THEME,...data.theme};
+        if(typeof next.bg==='string'&&typeof next.surface==='string'&&typeof next.text==='string'){setTheme(next);store.set("ledger-theme",next)}
+      }
+      if(data.savedTheme!==undefined&&(data.savedTheme===null||(typeof data.savedTheme==='object'&&!Array.isArray(data.savedTheme)))){setSavedTheme(data.savedTheme);store.set("ledger-theme-saved",data.savedTheme)}
+    }catch(e){console.warn("applyRemote failed:",e)}
   },[]);
 
   const pushSync=useCallback(uid=>{
@@ -1426,10 +1446,19 @@ function App(){
         const last=getLastSync(uid);
         const remoteAt=data.updatedAt||0;
         if(remoteAt>last){
-          skipNextPushRef.current=true; // don't echo what we just applied back to the cloud
-          applyRemote(data);
-          setLastSync(uid,remoteAt);
-          showToast("Synced from cloud.","success");
+          const local=stateRef.current||{};
+          const localHasData=!!local.settings||(Array.isArray(local.expenses)&&local.expenses.length>0)||(Array.isArray(local.topUps)&&local.topUps.length>0);
+          const cloudLooksDefault=!(Array.isArray(data.expenses)&&data.expenses.length>0)&&!(Array.isArray(data.topUps)&&data.topUps.length>0)&&!data.settings;
+          if(cloudLooksDefault&&localHasData){
+            // The cloud copy is an empty/default state (e.g. seeded before setup).
+            // Never let it replace real local data — push the real copy up instead.
+            pushSync(uid);
+          }else{
+            skipNextPushRef.current=true; // don't echo what we just applied back to the cloud
+            applyRemote(data);
+            setLastSync(uid,remoteAt);
+            showToast("Synced from cloud.","success");
+          }
         }else if(remoteAt<last){
           pushSync(uid); // cloud copy is older — restore it from this device
         }
@@ -1458,9 +1487,14 @@ function App(){
       await fbAuth.signInWithPopup(provider);
       showToast("Signed in — syncing is on. Change something to push your data.","success");
     }catch(err){
-      if(err&&(err.code==='auth/popup-blocked'||err.code==='auth/cancelled-popup-request')){
+      const code=err&&err.code;
+      if(code==='auth/popup-closed-by-user'){
+        showToast("Sign-in cancelled.","info");
+      }else if(code==='auth/popup-blocked'||code==='auth/cancelled-popup-request'){
         showToast("Popup blocked — allow popups for this page and try again.","error");
-      }else if(err&&(err.code==='auth/operation-not-supported-in-this-environment'||err.code==='auth/unauthorized-domain')){
+      }else if(code==='auth/unauthorized-domain'){
+        showToast("This domain isn't authorized — add it in Firebase console → Authentication → Settings → Authorized domains.","error");
+      }else if(code==='auth/operation-not-supported-in-this-environment'){
         showToast("Google sign-in needs http(s) hosting — serve this file from a local server or a host.","error");
       }else{
         showToast(err&&err.message?err.message:"Sign-in failed.","error");
@@ -2958,7 +2992,7 @@ function App(){
                       </>
                     ):(
                       <div className="section-desc">
-                        Sync is ready but needs a Firebase project. Open this file, find the <span className="mono">FIREBASE_CONFIG</span> block, and paste your Firebase web app config. Then enable Google sign-in and create a Firestore database (rules are documented in the file). Google sign-in also needs the app served over http(s), not opened as a plain file.
+                        Sync is ready but needs a Firebase project. Open this file, find the <span className="mono">FIREBASE_CONFIG</span> block, and paste your Firebase web app config. Then enable Google sign-in, authorize this site's domain (Authentication → Settings → Authorized domains), and create a Firestore database (rules are documented in the file). The app must be served over http(s), not opened as a plain file.
                       </div>
                     )}
 
@@ -2997,7 +3031,30 @@ function App(){
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+/* If a render ever throws (e.g. from a bad synced copy), show a recoverable
+   screen instead of a black/blank page. */
+class LedgerErrorBoundary extends React.Component{
+  constructor(props){super(props);this.state={err:null}}
+  static getDerivedStateFromError(err){return{err}}
+  componentDidCatch(err,info){console.error("Ledger crashed:",err,info)}
+  render(){
+    if(this.state.err){
+      const btn={fontFamily:'inherit',fontSize:13,fontWeight:600,padding:'9px 14px',borderRadius:8,border:'none',cursor:'pointer',color:'#0b0d10',background:'#e8e8e8',marginRight:8};
+      return(
+        <div style={{maxWidth:520,margin:'80px auto',padding:28,fontFamily:"system-ui,-apple-system,sans-serif",color:'#e8e8e8',background:'#0b0d10',borderRadius:14}}>
+          <div style={{fontSize:20,fontWeight:700,marginBottom:8}}>Something went wrong</div>
+          <div style={{fontSize:13,color:'#9a9a9a',marginBottom:14}}>Usually caused by a corrupt synced copy — reloading usually fixes it. If it keeps happening, reset local data (your cloud copy is preserved).</div>
+          <code style={{display:'block',fontSize:11,color:'#f88',marginBottom:18,wordBreak:'break-word'}}>{String((this.state.err&&this.state.err.message)||this.state.err)}</code>
+          <button style={btn} onClick={()=>location.reload()}>Reload</button>
+          <button style={{...btn,background:'#c0392b',color:'#fff'}} onClick={()=>{Object.keys(localStorage).filter(k=>k.startsWith('ledger-')).forEach(k=>localStorage.removeItem(k));location.reload()}}>Reset local data &amp; reload</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<LedgerErrorBoundary><App/></LedgerErrorBoundary>);
 </script>
 <script>
 // Typewriter tab-title animation
