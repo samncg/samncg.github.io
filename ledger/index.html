@@ -1468,7 +1468,7 @@ function App(){
     let unsub=null;
     try{
       unsub=fbFS.doc('ledger/'+uid).onSnapshot(snap=>{
-        if(snap.exists()){
+        if(snap.exists){ // `exists` is a boolean property on DocumentSnapshot (v9+), not a method
           const data=snap.data();
           const last=getLastSync(uid);
           const at=data.updatedAt;
