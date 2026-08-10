@@ -331,6 +331,20 @@ input[type="number"]{-moz-appearance:textfield}
 }
 .card>*{position:relative;z-index:1}
 .card:hover{box-shadow:var(--shadow-sm)}
+
+/* 3D tilt — panels lean toward the cursor (body.tilt-on is toggled by the setting) */
+body.tilt-on .card,body.tilt-on .hero,body.tilt-on .setup-card{
+  transform:perspective(1000px) rotateX(var(--tiltX,0deg)) rotateY(var(--tiltY,0deg));
+  transform-style:preserve-3d;
+  transition:transform .3s var(--ease-out),box-shadow .2s,border-color .2s;
+  will-change:transform;
+}
+body.tilt-on .card:hover,body.tilt-on .hero:hover,body.tilt-on .setup-card:hover{
+  transition:transform .06s linear; /* track the cursor closely while hovering */
+}
+/* The entrance animation (fadeUp … both) would otherwise keep its end-state
+   transform forever and override the tilt — drop the forwards fill when tilting. */
+body.tilt-on .fade-in{animation-fill-mode:backwards}
 .card-title{
   font-size:14px;font-weight:700;color:var(--accent-fg);
   margin:calc(-1*var(--card-pad,24px)) calc(-1*var(--card-pad,24px)) 18px;
@@ -540,6 +554,19 @@ select.input{
   color:var(--text-muted);font-family:var(--font-mono,'JetBrains Mono',monospace);
   letter-spacing:.04em;
 }
+
+/* GitHub-style spending heatmap */
+.heatmap-wrap{padding:6px 2px}
+.heatmap-body{display:flex;align-items:flex-start;gap:6px;width:max-content;max-width:100%;margin:0 auto;overflow-x:auto}
+.heat-days{display:grid;flex-shrink:0}
+.heat-day-label{font-size:10px;color:var(--text-muted);font-family:var(--font-mono,'JetBrains Mono',monospace);align-self:center;line-height:1}
+.heatmap-grid{display:grid;grid-auto-flow:column;flex-shrink:0}
+.heat-cell{border-radius:3px;border:1px solid var(--border);background:transparent;cursor:default}
+.heat-cell:hover{outline:1px solid var(--text-dim);outline-offset:1px}
+.heat-legend{display:flex;align-items:center;gap:4px;margin-top:12px;font-size:10.5px;color:var(--text-muted);font-family:var(--font-mono,'JetBrains Mono',monospace)}
+.heat-legend-cell{width:11px;height:11px;border-radius:3px;border:1px solid var(--border);flex-shrink:0}
+.heat-legend-label{font-size:10px;color:var(--text-muted);margin:0 2px}
+.heat-legend-total{margin-left:auto;color:var(--text-dim)}
 
 /* ═══════════════════════════════════════════
    HISTORY
@@ -1026,6 +1053,17 @@ const FONT_OPTIONS=[
 
 const CAT_COLOR_PRESETS=[null,'#ff8a3d','#ff5c93','#ffd93d','#5bd488','#5b9fd4','#a68bfa','#f5f5f5','#2a2a2a'];
 
+/* GitHub-style spending heatmap — base (empty days) + 4 intensity levels */
+const HEAT_DEFAULT_COLORS={l0:'transparent',l1:'#9be9a8',l2:'#40c463',l3:'#30a14e',l4:'#216e39'};
+const HEAT_PRESETS={
+  github:{name:'GitHub',colors:{l0:'transparent',l1:'#9be9a8',l2:'#40c463',l3:'#30a14e',l4:'#216e39'}},
+  githubDark:{name:'GitHub dark',colors:{l0:'#161b22',l1:'#0e4429',l2:'#006d32',l3:'#26a641',l4:'#39d353'}},
+  ocean:{name:'Ocean',colors:{l0:'transparent',l1:'#a8c8f0',l2:'#5b9fd4',l3:'#2f6fb8',l4:'#1e3f8f'}},
+  purple:{name:'Purple',colors:{l0:'transparent',l1:'#d8c8f5',l2:'#b08cff',l3:'#8a5cf5',l4:'#5a2db0'}},
+  warm:{name:'Warm',colors:{l0:'transparent',l1:'#ffdfb0',l2:'#ffb066',l3:'#f57c3d',l4:'#c2402a'}},
+};
+const heatColorVal=c=>!c||c==='transparent'||c==='none'?'#1b1f24':c;
+
 /* Custom Google Fonts — loads the font's stylesheet on demand */
 const loadGoogleFont=(family)=>{
   const linkId=`gf-${family.replace(/\s+/g,'-').toLowerCase()}`;
@@ -1078,6 +1116,9 @@ const store={
 
 const PREF_DEFAULTS={
   currency:"MYR",compact:false,pieThickness:3.6,pieGap:0,groupHistory:true,
+  tilt:true,
+  trendStyle:'line', // 'line' | 'heatmap'
+  heatColors:{l0:'transparent',l1:'#9be9a8',l2:'#40c463',l3:'#30a14e',l4:'#216e39'},
   wallpaper:null,wallpaperDim:60,
   uiBlur:16,uiOpacity:96,wallBlur:0,
   font:"inter",weather:"none",weatherSpeed:1,
@@ -1160,6 +1201,46 @@ const firestoreSafe=o=>{
     return out;
   }
   return o;
+};
+
+/* ═══════════════════════════════════════════
+   3D TILT — panels lean toward the cursor
+   ═══════════════════════════════════════════ */
+const TILT_MAX=7; // max tilt in degrees
+let tiltActive=false;
+const tiltTarget=e=>e.target.closest('.card,.hero,.setup-card');
+const tiltMove=e=>{
+  if(!tiltActive)return;
+  const el=tiltTarget(e);
+  if(!el)return;
+  const r=el.getBoundingClientRect();
+  if(!r.width||!r.height)return;
+  const px=(e.clientX-r.left)/r.width-0.5; // -0.5 .. 0.5
+  const py=(e.clientY-r.top)/r.height-0.5;
+  el.style.setProperty('--tiltY',(px*TILT_MAX*2).toFixed(3)+'deg'); // lean left/right toward the cursor
+  el.style.setProperty('--tiltX',(-py*TILT_MAX*2).toFixed(3)+'deg'); // lean up/down toward the cursor
+};
+const tiltLeave=e=>{
+  if(!tiltActive)return;
+  const el=tiltTarget(e);
+  if(!el||(e.relatedTarget&&el.contains(e.relatedTarget)))return;
+  el.style.setProperty('--tiltX','0deg');
+  el.style.setProperty('--tiltY','0deg');
+};
+const tiltEnable=()=>{
+  if(tiltActive)return;
+  tiltActive=true;
+  document.body.classList.add('tilt-on');
+  document.addEventListener('mousemove',tiltMove);
+  document.addEventListener('mouseout',tiltLeave);
+};
+const tiltDisable=()=>{
+  if(!tiltActive)return;
+  tiltActive=false;
+  document.body.classList.remove('tilt-on');
+  document.removeEventListener('mousemove',tiltMove);
+  document.removeEventListener('mouseout',tiltLeave);
+  document.querySelectorAll('.card,.hero,.setup-card').forEach(el=>{el.style.removeProperty('--tiltX');el.style.removeProperty('--tiltY')});
 };
 
 /* ═══════════════════════════════════════════
@@ -1720,6 +1801,50 @@ function App(){
   const trendMax=Math.max(dailyBudget*1.3,...trendData.map(d=>d.spent),1);
   const[trendHover,setTrendHover]=useState(null);
 
+  /* GitHub-style spending heatmap data (weeks as columns, Mon–Sun rows) */
+  const heatColors={...HEAT_DEFAULT_COLORS,...(prefs.heatColors||{})};
+  const heatData=useMemo(()=>{
+    const end=new Date(today+'T00:00:00');
+    const start=new Date(end);start.setDate(end.getDate()-(trendRange-1));
+    const first=new Date(start);first.setDate(start.getDate()-((start.getDay()+6)%7)); // Monday on/before the range start
+    const cells=[];let total=0,max=0;
+    for(let d=new Date(first);d<=end;d.setDate(d.getDate()+1)){
+      const date=todayKey(d);
+      const spent=spentByDay[date]||0;
+      total+=spent;if(spent>max)max=spent;
+      cells.push({date,spent});
+    }
+    const top=max>0?max:1;
+    return{
+      weeks:Math.ceil(cells.length/7),
+      total,
+      cells:cells.map(c=>({...c,level:c.spent===0?0:Math.min(4,Math.max(1,Math.ceil((c.spent/top)*4)))})),
+    };
+  },[spentByDay,today,trendRange]);
+  /* Keep the range sensible for the chosen style. */
+  useEffect(()=>{
+    if(prefs.trendStyle==='heatmap'&&trendRange<30)setTrendRange(30);
+    if(prefs.trendStyle==='line'&&trendRange>30)setTrendRange(30);
+  },[prefs.trendStyle]);
+  /* Size heatmap cells to fit the card: fill the width for long ranges, but cap
+     the size so short ranges (few weeks) don't blow up. */
+  const heatWrapRef=useRef(null);
+  const[heatCell,setHeatCell]=useState(12);
+  useEffect(()=>{
+    const measure=()=>{
+      const el=heatWrapRef.current;
+      if(!el)return;
+      const weeks=heatData.weeks;
+      if(!weeks)return;
+      const avail=el.clientWidth;
+      const cell=Math.max(10,Math.min(24,Math.floor((avail-(weeks-1)*3)/weeks)));
+      setHeatCell(cell);
+    };
+    measure();
+    window.addEventListener('resize',measure);
+    return ()=>window.removeEventListener('resize',measure);
+  },[heatData.weeks,prefs.trendStyle]);
+
   /* ─── History ─── */
   const[filterCats,setFilterCats]=useState([]);
   const[showFilters,setShowFilters]=useState(false);
@@ -2046,6 +2171,12 @@ function App(){
     return()=>{document.body.style.overflow=prev};
   },[showDrawer,showSetup,showTopUp,showCmd,confirm]);
 
+  /* 3D tilt — lean panels toward the cursor (setting-controlled). */
+  useEffect(()=>{
+    if(prefs.tilt)tiltEnable();else tiltDisable();
+    return ()=>tiltDisable();
+  },[prefs.tilt]);
+
   /* ═══════════════════════════════════════════
      RENDER
      ═══════════════════════════════════════════ */
@@ -2248,14 +2379,45 @@ function App(){
               <div className="card-title">
                 <span className="card-title-left">
                   <span className="card-title-icon"><I.Trend/></span>
-                  Spending trend
+                  {prefs.trendStyle==='heatmap'?'Spending heatmap':'Spending trend'}
                 </span>
                 <div className="range-tabs" style={{marginBottom:0,padding:3}}>
-                  {[7,14,30].map(n=>(
-                    <button key={n} className={`range-tab ${trendRange===n?'active':''}`} onClick={()=>setTrendRange(n)} style={{padding:'6px 12px',fontSize:11}}>{n}d</button>
+                  {(prefs.trendStyle==='heatmap'?[30,90,365]:[7,14,30]).map(n=>(
+                    <button key={n} className={`range-tab ${trendRange===n?'active':''}`} onClick={()=>setTrendRange(n)} style={{padding:'6px 12px',fontSize:11}}>{n<365?`${n}d`:'1y'}</button>
                   ))}
                 </div>
               </div>
+              {prefs.trendStyle==='heatmap'?(
+                <div className="heatmap-wrap" ref={heatWrapRef}>
+                  <div className="heatmap-body">
+                    <div className="heat-days" style={{gridTemplateRows:`repeat(7,${heatCell}px)`,gap:3}}>
+                      <span className="heat-day-label" style={{gridRow:1}}>Mon</span>
+                      <span className="heat-day-label" style={{gridRow:2}}>Tue</span>
+                      <span className="heat-day-label" style={{gridRow:3}}>Wed</span>
+                      <span className="heat-day-label" style={{gridRow:4}}>Thu</span>
+                      <span className="heat-day-label" style={{gridRow:5}}>Fri</span>
+                      <span className="heat-day-label" style={{gridRow:6}}>Sat</span>
+                      <span className="heat-day-label" style={{gridRow:7}}>Sun</span>
+                    </div>
+                    <div className="heatmap-grid" style={{gridTemplateColumns:`repeat(${heatData.weeks},${heatCell}px)`,gridTemplateRows:`repeat(7,${heatCell}px)`,gap:3}}>
+                      {heatData.cells.map(c=>(
+                        <div key={c.date} className="heat-cell"
+                          style={{width:heatCell,height:heatCell,background:c.level===0?(heatColors.l0&&heatColors.l0!=='transparent'?heatColors.l0:'transparent'):heatColors['l'+c.level]}}
+                          title={`${relativeDate(c.date,today)} · Spent ${MYR(c.spent)}`}/>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="heat-legend">
+                    <span className="heat-legend-label">Less</span>
+                    {['l0','l1','l2','l3','l4'].map(k=>(
+                      <span key={k} className="heat-legend-cell" style={{background:(k==='l0'&&(heatColors.l0==='transparent'||!heatColors.l0))?'transparent':heatColors[k]}}/>
+                    ))}
+                    <span className="heat-legend-label">More</span>
+                    <span className="heat-legend-total">{MYR(heatData.total)} spent</span>
+                  </div>
+                </div>
+              ):(
+              <>
               <div className="trend-chart">
                 <svg className="trend-svg" viewBox={`0 0 ${trendData.length*40} 160`} preserveAspectRatio="none">
                   <g className="trend-grid">
@@ -2305,6 +2467,8 @@ function App(){
                 <span><span className="legend-dot" style={{background:theme.accent}}/>Daily spend</span>
                 {dailyBudget>0&&<span><span className="legend-dot" style={{background:theme.warning}}/>Allowance ({MYR(dailyBudget)})</span>}
               </div>
+              </>
+              )}
             </div>
   );
   const cardHistory=(
@@ -2456,7 +2620,7 @@ function App(){
             <div className="brand-mark">L</div>
             <div>
               <div className="brand-name">Ledger</div>
-              <div className="brand-sub">Personal Budget</div>
+              <div className="brand-sub">samncg.github.io/ledger</div>
             </div>
           </div>
           <div className="topbar-actions">
@@ -2963,6 +3127,43 @@ function App(){
                       <input className="slider" type="range" min="0" max="4" step="0.2" value={prefs.pieGap} onChange={e=>persistPrefs({...prefs,pieGap:parseFloat(e.target.value)})}/>
                     </div>
 
+                    <div className="section-title">Trend style</div>
+                    <div className="drawer-tabs">
+                      {[['line','Line chart'],['heatmap','Heatmap']].map(([id,label])=>(
+                        <button key={id} className={`drawer-tab ${prefs.trendStyle===id?'active':''}`} onClick={()=>persistPrefs({...prefs,trendStyle:id})}>{label}</button>
+                      ))}
+                    </div>
+                    {prefs.trendStyle==='heatmap'&&(
+                      <>
+                        <div className="section-title">Heatmap colors</div>
+                        <div className="theme-preset-grid">
+                          {Object.entries(HEAT_PRESETS).map(([key,p])=>{
+                            const active=Object.keys(HEAT_DEFAULT_COLORS).every(k=>heatColors[k]===p.colors[k]);
+                            return(
+                              <button key={key} className={`theme-preset ${active?'active':''}`} onClick={()=>persistPrefs({...prefs,heatColors:{...p.colors}})}>
+                                <div className="theme-preset-swatch" style={{display:'flex',gap:2}}>
+                                  {['l0','l1','l2','l3','l4'].map(k=>(
+                                    <span key={k} style={{width:14,height:14,borderRadius:3,background:p.colors[k]==='transparent'?'var(--surface-2)':p.colors[k],border:'1px solid var(--border)'}}/>
+                                  ))}
+                                </div>
+                                <div className="theme-preset-name">{p.name}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {['l0','l1','l2','l3','l4'].map(k=>(
+                          <div className="color-row" key={k}>
+                            <span className="color-row-label">{k==='l0'?'Empty days':'Level '+k.slice(1)}</span>
+                            <span style={{display:'flex',alignItems:'center',gap:8}}>
+                              <span className="color-hex">{heatColors[k]==='transparent'?'none':heatColors[k]}</span>
+                              <input className="color-input" type="color" value={heatColorVal(heatColors[k])} onChange={e=>persistPrefs({...prefs,heatColors:{...heatColors,[k]:e.target.value}})}/>
+                            </span>
+                          </div>
+                        ))}
+                        <div className="section-desc">"Empty days" is the base cell color — set to none for the default transparent look.</div>
+                      </>
+                    )}
+
                     <div className="section-title">Category colors</div>
                     <div className="section-desc">Controls pie chart, bar chart, and badges.</div>
                     {cats.map(c=>(
@@ -3018,6 +3219,13 @@ function App(){
                         <div className="toggle-desc">Show Today, Yesterday, This week, and monthly headers.</div>
                       </div>
                       <button className={`toggle ${prefs.groupHistory?'on':''}`} onClick={()=>persistPrefs({...prefs,groupHistory:!prefs.groupHistory})}/>
+                    </div>
+                    <div className="toggle-row">
+                      <div>
+                        <div className="toggle-label">3D tilt panels</div>
+                        <div className="toggle-desc">Cards and the hero lean toward your cursor. Mouse only — no effect on touch screens.</div>
+                      </div>
+                      <button className={`toggle ${prefs.tilt?'on':''}`} onClick={()=>persistPrefs({...prefs,tilt:!prefs.tilt})} title="Toggle 3D tilt"/>
                     </div>
 
                     <div className="section-title">Top-ups</div>
