@@ -490,6 +490,18 @@ select.input{
 .totals-value{font-size:26px;font-weight:700;font-family:var(--font-mono,'JetBrains Mono',monospace);letter-spacing:-.025em}
 .totals-caption{font-size:11px;color:var(--text-muted);margin-top:4px}
 
+.piggy-wrap{display:flex;flex-direction:column;gap:14px}
+.piggy-stage{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.piggy-info{flex:1;min-width:170px}
+.piggy-progress{height:10px;border-radius:999px;background:var(--surface-2);overflow:hidden;border:1px solid var(--border)}
+.piggy-progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--positive));transition:width .4s ease}
+.piggy-img{width:100%;height:auto;display:block;border-radius:12px;border:1px solid var(--border)}
+.piggy-img.default{image-rendering:pixelated;transform:scaleX(-1)} /* crisp pixels, faces right */
+.piggy-actions{display:flex;gap:8px;flex-wrap:wrap}
+.piggy-amt{display:flex;gap:8px;align-items:center;margin-top:10px}
+.piggy-amt .input{flex:1}
+.auto-rule-note{font-size:11.5px;color:var(--text-muted);margin-top:2px}
+
 .insights-row{
   display:flex;gap:14px;flex-wrap:wrap;
   font-size:12px;color:var(--text-dim);margin-bottom:20px;
@@ -1109,9 +1121,96 @@ const groupLabel=(dateStr,today)=>{
   return d.toLocaleDateString(undefined,{month:'long',year:'numeric'});
 };
 const uid=()=>Date.now()+Math.random().toString(36).slice(2,6);
+/* Effective category list for an expense — new entries carry a `categories`
+   array, old synced ones only have a single `category`. */
+const expCats=e=>Array.isArray(e.categories)&&e.categories.length?e.categories:(e.category?[e.category]:[]);
 const store={
   get(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch(e){return null}},
   set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
+};
+
+/* ═══════════════════════════════════════════
+   PIGGY BANK — GIF, sounds, confetti
+   ═══════════════════════════════════════════ */
+const PIGGY_GIF="https://terraria.wiki.gg/images/Flying_Piggy_Bank_%28animated%29.gif?63ff5d";
+const FREQ_OPTIONS={daily:"Daily",weekly:"Weekly",monthly:"Monthly"};
+
+let piggyAudio=null;
+const getAudio=()=>{
+  if(!piggyAudio)try{piggyAudio=new (window.AudioContext||window.webkitAudioContext)()}catch(e){return null}
+  if(piggyAudio&&piggyAudio.state==='suspended')piggyAudio.resume();
+  return piggyAudio;
+};
+const tone=(ctx,freq,at,dur,type='sine',vol=0.18)=>{
+  const o=ctx.createOscillator(),g=ctx.createGain();
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(0.0001,at);
+  g.gain.exponentialRampToValueAtTime(vol,at+0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001,at+dur);
+  o.connect(g).connect(ctx.destination);
+  o.start(at);o.stop(at+dur+0.05);
+};
+const playPiggySound=(id,customUrl)=>{
+  if(id==='custom'){
+    if(customUrl){const a=new Audio(customUrl);a.play().catch(()=>{})}
+    else{const ctx=getAudio();if(ctx)tone(ctx,987.77,ctx.currentTime,0.12,'triangle',0.2)}
+    return;
+  }
+  if(id==='none')return;
+  const ctx=getAudio();if(!ctx)return;
+  const t=ctx.currentTime;
+  if(id==='chime'){
+    [523.25,659.25,783.99,1046.5].forEach((f,i)=>tone(ctx,f,t+i*0.09,0.35,'sine',0.14));
+  }else{
+    tone(ctx,987.77,t,0.12,'triangle',0.2);
+    tone(ctx,1318.5,t+0.07,0.2,'triangle',0.18);
+  }
+};
+const playCelebrate=()=>{
+  const ctx=getAudio();if(!ctx)return;
+  const t=ctx.currentTime;
+  [523.25,659.25,783.99,1046.5,1318.5].forEach((f,i)=>tone(ctx,f,t+i*0.08,0.5,'triangle',0.16));
+  [261.63,329.63,392,523.25].forEach((f,i)=>tone(ctx,f/2,t+i*0.08,0.7,'sine',0.1));
+};
+const confettiBurst=()=>{
+  const canvas=document.createElement('canvas');
+  canvas.style.cssText='position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:99999';
+  document.body.appendChild(canvas);
+  const ctx=canvas.getContext('2d');
+  canvas.width=window.innerWidth;canvas.height=window.innerHeight;
+  const colors=['#ff5e7e','#ffd166','#06d6a0','#118ab2','#8338ec','#ff9f1c'];
+  const parts=Array.from({length:180},()=>({
+    x:Math.random()*canvas.width,
+    y:-30-Math.random()*canvas.height*0.6,
+    w:6+Math.random()*9,h:9+Math.random()*11,
+    c:colors[Math.random()*colors.length|0],
+    vy:2+Math.random()*3.5,vx:-1.6+Math.random()*3.2,
+    rot:Math.random()*Math.PI,vr:-0.15+Math.random()*0.3
+  }));
+  const start=performance.now();
+  const step=now=>{
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    for(const p of parts){
+      p.y+=p.vy;p.x+=p.vx;p.rot+=p.vr;
+      if(p.y>canvas.height+20){p.y=-20;p.x=Math.random()*canvas.width}
+      ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.rot);ctx.fillStyle=p.c;ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);ctx.restore();
+    }
+    if(now-start<3200)requestAnimationFrame(step);
+    else canvas.remove();
+  };
+  requestAnimationFrame(step);
+};
+
+/* Advance a Date by a frequency — used by automations. */
+const advanceDate=(d,freq)=>{
+  const nd=new Date(d);
+  if(freq==='weekly')nd.setDate(nd.getDate()+7);
+  else if(freq==='monthly'){
+    const day=nd.getDate();
+    nd.setMonth(nd.getMonth()+1);
+    if(nd.getDate()<day)nd.setDate(0); // clamp (e.g. 31st → last day of month)
+  }else nd.setDate(nd.getDate()+1);
+  return nd;
 };
 
 const PREF_DEFAULTS={
@@ -1126,7 +1225,9 @@ const PREF_DEFAULTS={
   customFonts:[],
   cardOrder:['log','breakdown','trend','history','backup'],
   cardPanel:null,cardPanelOpacity:100,
-  topUpTarget:'day', // 'day' = top-ups add to a day's rollover savings, 'month' = top-ups raise the total monthly budget
+  balancesEnabled:true, // 'true' = banking-style balance, 'false' = plain budgeting (old behavior)
+  heroMode:'daily',     // 'daily' = hero shows today's allowance, 'balance' = hero shows bank balance
+  piggyTexture:null,piggySound:true,piggySoundId:'coin',piggySoundCustom:null,
 };
 
 /* ═══════════════════════════════════════════
@@ -1184,10 +1285,10 @@ const getLastSync=uid=>{
   return t;
 };
 const setLastSync=(uid,t)=>{const o=store.get("ledger-synclast2")||{};o[uid]=t;store.set("ledger-synclast2",o)};
-/* Wallpaper / card-panel images are base64 and can exceed Firestore's 1 MiB
-   document limit, so they — and their settings (dim, blur, panel strength) —
-   stay device-local and never sync. */
-const sanitizePrefs=p=>{const clean={...p};delete clean.wallpaper;delete clean.wallpaperDim;delete clean.wallBlur;delete clean.cardPanel;delete clean.cardPanelOpacity;return clean};
+/* Wallpaper / card-panel / piggy-texture / piggy-sound files are base64 and can
+   exceed Firestore's 1 MiB document limit, so they — and their settings (dim,
+   blur, panel strength) — stay device-local and never sync. */
+const sanitizePrefs=p=>{const clean={...p};delete clean.wallpaper;delete clean.wallpaperDim;delete clean.wallBlur;delete clean.cardPanel;delete clean.cardPanelOpacity;delete clean.piggyTexture;delete clean.piggySoundCustom;return clean};
 /* Strip undefined values (Firestore rejects them) — imported backups or older
    entries can carry undefined fields. */
 const firestoreSafe=o=>{
@@ -1405,10 +1506,24 @@ function App(){
   const[categories,setCategories]=useState(()=>store.get("ledger-cats")||DEFAULT_CATS);
   const[catBudgets,setCatBudgets]=useState(()=>store.get("ledger-catbudgets")||{});
   const[topUps,setTopUps]=useState(()=>store.get("ledger-topups")||[]);
+  const[balance,setBalance]=useState(()=>store.get("ledger-balance")||{start:0});
+  const[piggy,setPiggy]=useState(()=>store.get("ledger-piggy")||{target:0,saved:0});
+  const[recurring,setRecurring]=useState(()=>store.get("ledger-recurring")||[]);
   const[showSetup,setShowSetup]=useState(false);
   const[showTopUp,setShowTopUp]=useState(false);
+  const[moveMode,setMoveMode]=useState("budget");
   const[topUpAmount,setTopUpAmount]=useState("");
   const[topUpNote,setTopUpNote]=useState("");
+  const[piggyAmount,setPiggyAmount]=useState("");
+  const[piggyOpen,setPiggyOpen]=useState(false);
+  const[piggyTargetDraft,setPiggyTargetDraft]=useState("");
+  const[piggyTargetEdit,setPiggyTargetEdit]=useState(false);
+  const[autoType,setAutoType]=useState("expense");
+  const[autoAmount,setAutoAmount]=useState("");
+  const[autoCat,setAutoCat]=useState("food");
+  const[autoNote,setAutoNote]=useState("");
+  const[autoFreq,setAutoFreq]=useState("monthly");
+  const[autoStart,setAutoStart]=useState(()=>todayKey());
   const[showDrawer,setShowDrawer]=useState(false);
   const[drawerTab,setDrawerTab]=useState("theme");
   const[showCmd,setShowCmd]=useState(false);
@@ -1425,7 +1540,9 @@ function App(){
   const syncedRef=useRef(null);
 
   const[amount,setAmount]=useState("");
-  const[category,setCategory]=useState("food");
+  const[selCats,setSelCats]=useState(["food"]);
+  const category=selCats[0]||"food";
+  const toggleSelCat=id=>setSelCats(prev=>prev.includes(id)?(prev.length>1?prev.filter(x=>x!==id):prev):[...prev,id]);
   const[note,setNote]=useState("");
   const[entryDate,setEntryDate]=useState(()=>todayKey());
   const[editingId,setEditingId]=useState(null);
@@ -1436,6 +1553,7 @@ function App(){
   const[draftDays,setDraftDays]=useState(()=>String(daysInMonth()));
   const[draftStartDate,setDraftStartDate]=useState(()=>firstOfMonthKey());
   const[draftCurrency,setDraftCurrency]=useState("MYR");
+  const[draftBalance,setDraftBalance]=useState("");
 
   const[newCatName,setNewCatName]=useState("");
   const[newCatGlyph,setNewCatGlyph]=useState("★");
@@ -1444,7 +1562,8 @@ function App(){
 
   const today=todayKey();
   const cur=prefs.currency||"MYR";
-  const topUpTarget=prefs.topUpTarget==='month'?'month':'day';
+  const balancesOn=prefs.balancesEnabled!==false;
+  const heroMode=balancesOn?(prefs.heroMode==='balance'?'balance':'daily'):'daily';
   const MYR=useCallback(n=>fmt(n,cur),[cur]);
 
   const cats=useMemo(()=>categories.map(c=>({...c,color:theme.catColors[c.id]||'#7c8896'})),[categories,theme]);
@@ -1475,10 +1594,13 @@ function App(){
   },[showToast]);
   const persistCatBudgets=useCallback(n=>{setCatBudgets(n);store.set("ledger-catbudgets",n)},[]);
   const persistTopUps=useCallback(n=>{setTopUps(n);store.set("ledger-topups",n)},[]);
+  const persistBalance=useCallback(n=>{setBalance(n);store.set("ledger-balance",n)},[]);
+  const persistPiggy=useCallback(n=>{setPiggy(n);store.set("ledger-piggy",n)},[]);
+  const persistRecurring=useCallback(n=>{setRecurring(n);store.set("ledger-recurring",n)},[]);
 
   /* ─── Cloud sync (Firebase + Google Auth) ─── */
   const stateRef=useRef(null);
-  useEffect(()=>{stateRef.current={expenses,topUps,settings,categories,catBudgets,prefs,theme}},[expenses,topUps,settings,categories,catBudgets,prefs,theme]);
+  useEffect(()=>{stateRef.current={expenses,topUps,balance,piggy,recurring,settings,categories,catBudgets,prefs,theme}},[expenses,topUps,balance,piggy,recurring,settings,categories,catBudgets,prefs,theme]);
   const savedThemeRef=useRef(savedTheme);useEffect(()=>{savedThemeRef.current=savedTheme},[savedTheme]);
   const skipNextPushRef=useRef(false);
 
@@ -1489,6 +1611,9 @@ function App(){
     try{
       if(Array.isArray(data.expenses)&&data.expenses.every(e=>e&&typeof e.amount==='number'&&typeof e.date==='string')){setExpenses(data.expenses);store.set("ledger-expenses",data.expenses)}
       if(Array.isArray(data.topUps)&&data.topUps.every(t=>t&&typeof t.amount==='number'&&typeof t.date==='string')){setTopUps(data.topUps);store.set("ledger-topups",data.topUps)}
+      if(data.balance&&typeof data.balance==='object'&&!Array.isArray(data.balance)&&typeof data.balance.start==='number'){setBalance(data.balance);store.set("ledger-balance",data.balance)}
+      if(data.piggy&&typeof data.piggy==='object'&&!Array.isArray(data.piggy)&&typeof data.piggy.target==='number'&&typeof data.piggy.saved==='number'){setPiggy(data.piggy);store.set("ledger-piggy",data.piggy)}
+      if(Array.isArray(data.recurring)&&data.recurring.every(r=>r&&typeof r.amount==='number'&&typeof r.type==='string')){setRecurring(data.recurring);store.set("ledger-recurring",data.recurring)}
       if(data.settings&&typeof data.settings==='object'&&!Array.isArray(data.settings)&&typeof data.settings.monthlyBudget==='number'&&typeof data.settings.periodDays==='number'&&typeof data.settings.startDate==='string'){setSettings(data.settings);store.set("ledger-settings",data.settings)}
       if(Array.isArray(data.cats)&&data.cats.every(c=>c&&typeof c.id==='string'&&typeof c.label==='string')){setCategories(data.cats);store.set("ledger-cats",data.cats)}
       if(data.catBudgets&&typeof data.catBudgets==='object'&&!Array.isArray(data.catBudgets)){setCatBudgets(data.catBudgets);store.set("ledger-catbudgets",data.catBudgets)}
@@ -1497,7 +1622,10 @@ function App(){
         for(const k of Object.keys(data.prefs)){
           if(k==='customFonts'||k==='cardOrder'){if(Array.isArray(data.prefs[k]))next[k]=data.prefs[k]}
           else if(k==='compact'||k==='groupHistory'||k==='catEnabled')next[k]=!!data.prefs[k]
-          else if(k==='wallpaper'||k==='wallpaperDim'||k==='wallBlur'||k==='cardPanel'||k==='cardPanelOpacity'){/* device-local — never apply from the cloud */}
+          else if(k==='heroMode')next[k]=data.prefs[k]==='balance'?'balance':'daily'
+          else if(k==='balancesEnabled')next[k]=!!data.prefs[k]
+          else if(k==='piggySound')next[k]=!!data.prefs[k]
+          else if(k==='wallpaper'||k==='wallpaperDim'||k==='wallBlur'||k==='cardPanel'||k==='cardPanelOpacity'||k==='piggyTexture'||k==='piggySoundCustom'){/* device-local — never apply from the cloud */}
           else next[k]=data.prefs[k];
         }
         for(const k of ['pieThickness','pieGap','uiBlur','uiOpacity','wallBlur','cardPanelOpacity','wallpaperDim','weatherSpeed']){
@@ -1525,6 +1653,9 @@ function App(){
       const payload={
         expenses:firestoreSafe(s.expenses||[]),
         topUps:firestoreSafe(s.topUps||[]),
+        balance:firestoreSafe(s.balance||{start:0}),
+        piggy:firestoreSafe(s.piggy||{target:0,saved:0}),
+        recurring:firestoreSafe(s.recurring||[]),
         settings:firestoreSafe(s.settings||null),
         cats:firestoreSafe(s.categories||DEFAULT_CATS),
         catBudgets:firestoreSafe(s.catBudgets||{}),
@@ -1618,7 +1749,7 @@ function App(){
     if(pushTimerRef.current)clearTimeout(pushTimerRef.current);
     pushTimerRef.current=setTimeout(()=>pushSync(authUser.uid),1500);
     return ()=>clearTimeout(pushTimerRef.current);
-  },[expenses,topUps,settings,categories,catBudgets,prefs,theme,authUser,pushSync]);
+  },[expenses,topUps,balance,piggy,recurring,settings,categories,catBudgets,prefs,theme,authUser,pushSync]);
 
   const signInGoogle=async()=>{
     if(!FIREBASE_CONFIGURED){showToast("Sync isn't configured yet — see the Sync section in settings.","error");return}
@@ -1651,61 +1782,245 @@ function App(){
   const saveSetup=()=>{
     const budget=parseFloat(draftBudget);
     const days=parseInt(draftDays,10);
-    if(!budget||budget<=0||!days||days<=0){showToast("Enter a valid amount and period.","error");return}
+    if(!isFinite(budget)||budget<0||!days||days<=0){showToast("Enter a valid amount and period.","error");return}
+    let bal=null;
+    if(balancesOn){
+      bal=draftBalance.trim()===''?null:parseFloat(draftBalance);
+      if(bal!==null&&(!isFinite(bal)||bal<0)){showToast("Enter a valid balance.","error");return}
+    }
     persistSettings({monthlyBudget:budget,periodDays:days,startDate:draftStartDate||firstOfMonthKey()});
     if(!settings)persistPrefs({...prefs,currency:draftCurrency});
+    if(balancesOn){
+      if(bal!==null)persistBalance({...balance,start:bal});
+      else if(!settings)persistBalance({...balance,start:0});
+    }
     setShowSetup(false);
     showToast(settings?"Budget updated.":"Budget saved. Start tracking!","success");
   };
 
-  /* ─── Top up ─── */
+  /* ─── Move money & balance ─── */
   const topUpTotal=useMemo(()=>topUps.reduce((s,t)=>s+t.amount,0),[topUps]);
-  const addTopUp=()=>{
-    const val=parseFloat(topUpAmount);
-    if(!val||val<=0){showToast("Enter a valid top-up amount.","error");return}
-    const entry={id:uid(),amount:val,date:today,note:topUpNote.trim()};
-    persistTopUps([...topUps,entry]);
-    setTopUpAmount("");setTopUpNote("");setShowTopUp(false);
-    showToast(`Topped up ${MYR(val)}. ${topUpTarget==='month'?'Added to your monthly budget.':'Added to your rollover balance.'}`,"success");
-  };
-  const removeTopUp=id=>{
-    const removed=topUps.find(t=>t.id===id);
-    persistTopUps(topUps.filter(t=>t.id!==id));
-    if(removed)showToast("Top-up removed.","info",{
-      label:"Undo",run:()=>{persistTopUps([...topUps.filter(t=>t.id!==id),removed]);showToast("Restored.","success")}
-    });
-  };
-
-  const effectiveMonthlyBudget=settings?settings.monthlyBudget+(topUpTarget==='month'?topUpTotal:0):0;
+  const effectiveMonthlyBudget=settings?settings.monthlyBudget+topUpTotal:0;
   const dailyBudget=settings?effectiveMonthlyBudget/settings.periodDays:0;
 
   /* ─── Derived data ─── */
   const spentByDay=useMemo(()=>{
     const m={};for(const e of expenses)m[e.date]=(m[e.date]||0)+e.amount;return m;
   },[expenses]);
-  const toppedByDay=useMemo(()=>{
-    const m={};for(const t of topUps)m[t.date]=(m[t.date]||0)+t.amount;return m;
-  },[topUps]);
 
-  const{runningBalance,dayCells,elapsedDays}=useMemo(()=>{
-    if(!settings)return{runningBalance:0,dayCells:[],elapsedDays:0};
+  const{dayCells,elapsedDays,runningBalance}=useMemo(()=>{
+    if(!settings)return{dayCells:[],elapsedDays:0,runningBalance:0};
     const elapsed=Math.min(Math.max(dayDiff(settings.startDate,today)+1,1),settings.periodDays);
     let running=0;const cells=[];
     for(let i=0;i<settings.periodDays;i++){
       const date=addDays(settings.startDate,i);
       const isFuture=i>=elapsed;
       const spent=spentByDay[date]||0;
-      const topped=topUpTarget==='day'?(toppedByDay[date]||0):0;
-      const delta=isFuture?0:dailyBudget-spent+topped;
+      const delta=isFuture?0:dailyBudget-spent;
       if(!isFuture)running+=delta;
-      cells.push({date,spent,topped,delta,isFuture,isToday:date===today});
+      cells.push({date,spent,delta,isFuture,isToday:date===today});
     }
-    return{runningBalance:running,dayCells:cells,elapsedDays:elapsed};
-  },[settings,spentByDay,toppedByDay,today,dailyBudget,topUpTarget]);
+    return{dayCells:cells,elapsedDays:elapsed,runningBalance:running};
+  },[settings,spentByDay,today,dailyBudget]);
 
   const todaySpent=spentByDay[today]||0;
-  const todayTopped=toppedByDay[today]||0;
-  const todayRemaining=dailyBudget-todaySpent+(topUpTarget==='day'?todayTopped:0);
+  const todayRemaining=dailyBudget-todaySpent;
+
+  /* Bank balance = starting money, plus the leftover allowance banked at the end
+     of each day, minus money moved over to the monthly budget. Leftovers use the
+     allowance that was in effect on each day (top-ups dated after a day don't
+     retroactively change it), so returning money to the balance feels exact. */
+  const bankedSoFar=useMemo(()=>{
+    if(!settings)return 0;
+    const byDate={};
+    for(const t of topUps)byDate[t.date]=(byDate[t.date]||0)+t.amount;
+    let cum=0,banked=0;
+    for(const c of dayCells){
+      if(c.isFuture)break;
+      cum+=(byDate[c.date]||0);
+      const left=(settings.monthlyBudget+cum)/settings.periodDays-c.spent;
+      if(left>0)banked+=left;
+    }
+    return banked;
+  },[settings,topUps,dayCells]);
+  const bankBalance=useMemo(()=>(balance?.start||0)-topUpTotal+bankedSoFar,[balance,topUpTotal,bankedSoFar]);
+  const todaySaved=Math.max(0,todayRemaining);
+  const heroLabel=heroMode==='balance'?"Balance":"Available today";
+  const heroValue=heroMode==='balance'?bankBalance:todayRemaining;
+
+  const addTopUp=()=>{
+    const val=parseFloat(topUpAmount);
+    if(!val||val<=0){showToast(balancesOn?"Enter a valid amount.":"Enter a valid top-up amount.","error");return}
+    if(balancesOn&&val>bankBalance){showToast(`Not enough balance — move at most ${MYR(bankBalance)}.`,"error");return}
+    const entry={id:uid(),amount:val,date:today,note:topUpNote.trim()};
+    persistTopUps([...topUps,entry]);
+    setTopUpAmount("");setTopUpNote("");setShowTopUp(false);
+    showToast(balancesOn?`Moved ${MYR(val)} from your balance to this month's budget.`:`Topped up ${MYR(val)} — added to your monthly budget.`,"success");
+  };
+  const addToBalance=()=>{
+    const val=parseFloat(topUpAmount);
+    if(!val||val<=0){showToast("Enter a valid amount.","error");return}
+    persistBalance({...balance,start:(balance?.start||0)+val});
+    setTopUpAmount("");setTopUpNote("");setShowTopUp(false);
+    showToast(`Added ${MYR(val)} to your balance.`,"success");
+  };
+  const returnToBalance=()=>{
+    const val=parseFloat(topUpAmount);
+    if(!val||val<=0){showToast("Enter a valid amount.","error");return}
+    if(topUpTotal<=0){showToast("Nothing to return — you haven't moved money to the budget. Please move some first.","error");return}
+    if(val>topUpTotal){showToast(`Can't return more than the ${MYR(topUpTotal)} you moved to the budget.`,"error");return}
+    const entry={id:uid(),amount:-val,date:today,note:topUpNote.trim()};
+    persistTopUps([...topUps,entry]);
+    setTopUpAmount("");setTopUpNote("");setShowTopUp(false);
+    showToast(`Returned ${MYR(val)} from your budget to your balance.`,"success");
+  };
+  const withdrawFromBalance=()=>{
+    const val=parseFloat(topUpAmount);
+    if(!val||val<=0){showToast("Enter a valid amount.","error");return}
+    if(bankBalance<=0){showToast("Nothing to withdraw — your balance is empty. Move money into it first.","error");return}
+    if(val>bankBalance){showToast(`Not enough balance — withdraw at most ${MYR(bankBalance)}.`,"error");return}
+    persistBalance({...balance,start:(balance?.start||0)-val});
+    setTopUpAmount("");setTopUpNote("");setShowTopUp(false);
+    showToast(`Withdrew ${MYR(val)} from your balance.`,"success");
+  };
+  const submitMoney=()=>{
+    if(moveMode==='budget')return addTopUp();
+    if(moveMode==='return')return returnToBalance();
+    if(moveMode==='withdraw')return withdrawFromBalance();
+    return addToBalance();
+  };
+  const removeTopUp=id=>{
+    const removed=topUps.find(t=>t.id===id);
+    persistTopUps(topUps.filter(t=>t.id!==id));
+    if(removed)showToast("Transfer removed.","info",{
+      label:"Undo",run:()=>{persistTopUps([...topUps.filter(t=>t.id!==id),removed]);showToast("Restored.","success")}
+    });
+  };
+
+  /* ─── Piggy bank ─── */
+  const piggySaved=piggy?.saved||0;
+  const piggyTarget=piggy?.target||0;
+  const piggyPct=useMemo(()=>piggyTarget>0?Math.min(100,(piggySaved/piggyTarget)*100):0,[piggySaved,piggyTarget]);
+  const depositPiggy=()=>{
+    const val=parseFloat(piggyAmount);
+    if(!val||val<=0){showToast("Enter a valid amount.","error");return}
+    if(val>bankBalance){showToast(`Not enough balance — add at most ${MYR(bankBalance)}.`,"error");return}
+    const prev=piggySaved;
+    const saved=prev+val;
+    persistBalance({...balance,start:(balance?.start||0)-val});
+    persistPiggy({target:piggyTarget,saved});
+    setPiggyAmount("");setPiggyOpen(false);
+    if(prefs.piggySound!==false)playPiggySound(prefs.piggySoundId||'coin',prefs.piggySoundCustom);
+    showToast(`Added ${MYR(val)} to your piggy bank.`,"success");
+    if(piggyTarget>0&&prev<piggyTarget&&saved>=piggyTarget){
+      confettiBurst();
+      if(prefs.piggySound!==false)playCelebrate();
+      showToast("Goal complete — confetti! 🎉","success");
+    }
+  };
+  const breakPiggy=()=>{
+    if(piggySaved<=0){showToast("Your piggy bank is empty.","error");return}
+    setConfirm({
+      title:"Break the piggy bank?",
+      msg:`All ${MYR(piggySaved)} moves back to your balance.`,
+      onConfirm:()=>{persistBalance({...balance,start:(balance?.start||0)+piggySaved});persistPiggy({target:piggyTarget,saved:0});setConfirm(null);showToast(`Broke the piggy bank — ${MYR(piggySaved)} back to your balance.`,"success")},
+      onCancel:()=>setConfirm(null)
+    });
+  };
+  const savePiggyTarget=()=>{
+    const val=parseFloat(piggyTargetDraft);
+    if(!isFinite(val)||val<0){showToast("Enter a valid goal amount.","error");return}
+    persistPiggy({target:val,saved:piggySaved});
+    setPiggyTargetDraft("");setPiggyTargetEdit(false);
+    showToast(val>0?`Savings goal set to ${MYR(val)}.`:"Savings goal cleared.","success");
+  };
+
+  /* ─── Automations (recurring entries) ─── */
+  const runRecurring=(rules=recurring)=>{
+    const ex=[...expenses],tu=[...topUps];
+    let start=balance?.start||0;
+    let changed=false;
+    const next=rules.map(r=>{
+      if(!r.active)return r;
+      const from=r.last?addDays(r.last,1):(r.start||today);
+      const cursor=new Date(from+"T00:00:00");
+      const end=new Date(today+"T00:00:00");
+      if(cursor>end)return r;
+      const occ=[];
+      let cur=cursor;
+      while(cur<=end){occ.push(todayKey(cur));cur=advanceDate(cur,r.freq)}
+      for(const d of occ){
+        if(r.type==='expense')ex.push({id:uid(),date:d,amount:r.amount,category:r.category||'other',categories:[r.category||'other'],note:r.note?`${r.note} (auto)`:""});
+        else if(r.type==='budget')tu.push({id:uid(),amount:r.amount,date:d,note:r.note?`${r.note} (auto)`:""});
+        else start+=r.amount;
+      }
+      changed=true;
+      return {...r,last:occ[occ.length-1]};
+    });
+    if(changed){
+      persistExpenses(ex);persistTopUps(tu);persistBalance({...balance,start});persistRecurring(next);
+      showToast("Automated entries added.","success");
+    }
+  };
+  useEffect(()=>{runRecurring()},[]); // materialize any due recurring entries on load
+  const addAutomation=()=>{
+    const val=parseFloat(autoAmount);
+    if(!val||val<=0){showToast("Enter a valid amount.","error");return}
+    if(!autoStart){showToast("Pick a start date.","error");return}
+    const rule={id:uid(),type:autoType,amount:val,category:autoType==='expense'?autoCat:'',note:autoNote.trim(),freq:autoFreq,start:autoStart||today,last:null,active:true};
+    const next=[...recurring,rule];
+    persistRecurring(next);
+    setAutoAmount("");setAutoNote("");
+    showToast("Automation added.","success");
+    runRecurring(next); // backfill any occurrences up to today
+  };
+  const removeAutomation=id=>{
+    const removed=recurring.find(r=>r.id===id);
+    persistRecurring(recurring.filter(r=>r.id!==id));
+    if(removed)showToast("Automation removed.","info",{
+      label:"Undo",run:()=>{persistRecurring([...recurring.filter(r=>r.id!==id),removed]);showToast("Restored.","success")}
+    });
+  };
+  const toggleAutomation=r=>{
+    const next={...r,active:!r.active};
+    persistRecurring(recurring.map(x=>x.id===r.id?next:x));
+    if(next.active)runRecurring(recurring.map(x=>x.id===r.id?next:x));
+  };
+  const nextRun=r=>{
+    if(!r.active)return"Paused";
+    const from=r.last?addDays(r.last,1):(r.start||today);
+    const diff=dayDiff(today,from);
+    if(diff<=0)return"Due today";
+    return diff===1?"Tomorrow":`in ${diff}d`;
+  };
+
+  /* ─── Piggy texture & sound upload (device-local, like wallpaper) ─── */
+  const piggyTextureInputRef=useRef(null);
+  const piggySoundInputRef=useRef(null);
+  const triggerPiggyTextureUpload=()=>piggyTextureInputRef.current?.click();
+  const triggerPiggySoundUpload=()=>piggySoundInputRef.current?.click();
+  const handlePiggyTextureFile=e=>{
+    const file=e.target.files?.[0];if(!file)return;
+    if(!file.type.startsWith("image/")){showToast("Please choose an image file.","error");e.target.value="";return}
+    if(file.size>3*1024*1024){showToast("Image is too large — keep it under 3 MB.","error");e.target.value="";return}
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      persistPrefs({...prefs,piggyTexture:ev.target.result});
+      showToast("Piggy texture updated.","success");
+    };
+    reader.readAsDataURL(file);e.target.value="";
+  };
+  const handlePiggySoundFile=e=>{
+    const file=e.target.files?.[0];if(!file)return;
+    if(!file.type.startsWith("audio/")){showToast("Please choose an audio file.","error");e.target.value="";return}
+    if(file.size>3*1024*1024){showToast("Audio is too large — keep it under 3 MB.","error");e.target.value="";return}
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      persistPrefs({...prefs,piggySoundCustom:ev.target.result,piggySoundId:'custom'});
+      showToast("Custom deposit sound saved.","success");
+    };
+    reader.readAsDataURL(file);e.target.value="";
+  };
 
   const avgDailySpend=useMemo(()=>{
     if(!settings||elapsedDays<=0)return 0;
@@ -1728,7 +2043,7 @@ function App(){
     }
     return Object.values(map).filter(f=>f.count>1).sort((a,b)=>b.count-a.count||(b.last>a.last?1:-1)).slice(0,4);
   },[expenses]);
-  const applyFrequent=f=>{setAmount(String(f.amount));setCategory(f.category);setNote(f.note)};
+  const applyFrequent=f=>{setAmount(String(f.amount));setSelCats([f.category]);setNote(f.note)};
   const streak=useMemo(()=>{
     if(!settings)return 0;let c=0;
     for(const cell of[...dayCells].filter(x=>!x.isFuture).reverse()){if(cell.delta>=0)c++;else break}
@@ -1755,12 +2070,12 @@ function App(){
   }),[expenses,overviewBounds]);
   const categoryTotals=useMemo(()=>{
     const m={};for(const c of cats)m[c.id]=0;
-    for(const e of overviewExpenses)m[e.category]=(m[e.category]||0)+e.amount;
+    for(const e of overviewExpenses)for(const c of expCats(e))m[c]=(m[c]||0)+e.amount;
     return m;
   },[overviewExpenses,cats]);
   const maxCategory=Math.max(1,...Object.values(categoryTotals));
   const biggestInRange=useMemo(()=>overviewExpenses.length?overviewExpenses.reduce((max,e)=>e.amount>max.amount?e:max,overviewExpenses[0]):null,[overviewExpenses]);
-  const totalSpent=useMemo(()=>Object.values(categoryTotals).reduce((a,b)=>a+b,0),[categoryTotals]);
+  const totalSpent=useMemo(()=>overviewExpenses.reduce((s,e)=>s+e.amount,0),[overviewExpenses]);
   const rangeDays=useMemo(()=>{
     if(overviewBounds.start)return Math.max(1,dayDiff(overviewBounds.start,overviewBounds.end)+1);
     if(overviewExpenses.length===0)return 1;
@@ -1777,28 +2092,46 @@ function App(){
   const rangeLabel={period:"this budget period",week:"the last 7 days",month:"this calendar month",all:"all logged history",custom:"the selected range"}[overviewRange];
 
   const pieSlices=useMemo(()=>{
-    if(totalSpent<=0)return[];
+    const pool=Object.values(categoryTotals).reduce((a,b)=>a+b,0);
+    if(pool<=0)return[];
     let cumulative=0;
     return cats.map(c=>{
       const val=categoryTotals[c.id]||0;
-      const frac=val/totalSpent;const dash=frac*100;
+      const frac=val/pool;const dash=frac*100;
       const slice={...c,value:val,pct:frac*100,dash,offset:cumulative};
       cumulative+=dash;return slice;
     }).filter(s=>s.value>0);
-  },[cats,categoryTotals,totalSpent]);
+  },[cats,categoryTotals]);
 
   /* ─── Trend chart data ─── */
   const[trendRange,setTrendRange]=useState(14);
+  const[trendSeries,setTrendSeries]=useState(()=>["__total__"]);
+  const toggleTrendSeries=id=>setTrendSeries(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]);
   const trendData=useMemo(()=>{
-    const points=[];
+    const map={};
     for(let i=trendRange-1;i>=0;i--){
       const date=addDays(today,-i);
-      const spent=spentByDay[date]||0;
-      points.push({date,spent});
+      map[date]={date,total:0,byCat:{}};
     }
-    return points;
-  },[spentByDay,today,trendRange]);
-  const trendMax=Math.max(dailyBudget*1.3,...trendData.map(d=>d.spent),1);
+    for(const e of expenses){
+      const d=map[e.date];
+      if(!d)continue;
+      d.total+=e.amount;
+      for(const c of expCats(e))d.byCat[c]=(d.byCat[c]||0)+e.amount;
+    }
+    return Object.values(map);
+  },[expenses,today,trendRange]);
+  const trendSeriesList=useMemo(()=>{
+    const list=[];
+    if(trendSeries.includes("__total__"))list.push({id:"__total__",label:"Total",color:theme.accent,val:d=>d.total});
+    for(const id of trendSeries){
+      if(id==="__total__")continue;
+      const c=cats.find(x=>x.id===id);
+      if(c)list.push({id,label:c.label,color:c.color,val:d=>d.byCat[id]||0});
+    }
+    return list;
+  },[trendSeries,cats,theme.accent]);
+  const trendMax=Math.max(dailyBudget*1.3,...trendData.flatMap(d=>trendSeriesList.map(s=>s.val(d))),1);
   const[trendHover,setTrendHover]=useState(null);
 
   /* GitHub-style spending heatmap data (weeks as columns, Mon–Sun rows) */
@@ -1858,12 +2191,12 @@ function App(){
       ...expenses.map(e=>({...e,type:'expense'})),
       ...topUps.map(t=>({...t,type:'topup'})),
     ];
-    if(filterCats.length)list=list.filter(e=>e.type==='expense'&&filterCats.includes(e.category));
+    if(filterCats.length)list=list.filter(e=>e.type==='expense'&&expCats(e).some(c=>filterCats.includes(c)));
     if(historySearch.trim()){
       const q=historySearch.trim().toLowerCase();
       list=list.filter(e=>e.type==='topup'
-        ?((e.note||'').toLowerCase().includes(q)||'top up'.includes(q))
-        :(e.note.toLowerCase().includes(q)||e.category.toLowerCase().includes(q)));
+        ?((e.note||'').toLowerCase().includes(q)||'move to budget'.includes(q)||'top up'.includes(q)||'return to balance'.includes(q))
+        :(e.note.toLowerCase().includes(q)||expCats(e).some(c=>c.toLowerCase().includes(q))));
     }
     if(dateFrom)list=list.filter(e=>e.date>=dateFrom);
     if(dateTo)list=list.filter(e=>e.date<=dateTo);
@@ -1895,18 +2228,18 @@ function App(){
   /* ─── CRUD ─── */
   const addExpense=()=>{
     const val=parseFloat(amount);if(!val||val<=0)return;
-    const entry={id:uid(),date:entryDate||today,amount:val,category,note:note.trim()};
+    const entry={id:uid(),date:entryDate||today,amount:val,categories:selCats,category:selCats[0],note:note.trim()};
     persistExpenses([...expenses,entry]);
     setAmount("");setNote("");setEntryDate(today);
-    showToast(`Logged ${MYR(val)} in ${cats.find(c=>c.id===category)?.label}.`,"success");
+    showToast(`Logged ${MYR(val)} in ${selCats.map(id=>cats.find(c=>c.id===id)?.label||id).join(" + ")}.`,"success");
   };
   const startEdit=e=>{
-    setEditingId(e.id);setAmount(String(e.amount));setNote(e.note);setCategory(e.category);setEntryDate(e.date);
+    setEditingId(e.id);setAmount(String(e.amount));setNote(e.note);setSelCats(expCats(e));setEntryDate(e.date);
     if(addFormRef.current)addFormRef.current.scrollIntoView({behavior:'smooth',block:'center'});
   };
   const updateExpense=()=>{
     const val=parseFloat(amount);if(!val||val<=0)return;
-    persistExpenses(expenses.map(e=>e.id===editingId?{...e,amount:val,category,note:note.trim(),date:entryDate||today}:e));
+    persistExpenses(expenses.map(e=>e.id===editingId?{...e,amount:val,categories:selCats,category:selCats[0],note:note.trim(),date:entryDate||today}:e));
     cancelEdit();showToast("Spend updated.","success");
   };
   const cancelEdit=()=>{setEditingId(null);setAmount("");setNote("");setEntryDate(today)};
@@ -1929,7 +2262,7 @@ function App(){
 
   /* ─── Backup ─── */
   const exportData=()=>{
-    const payload={type:"ledger-backup",version:3,exportedAt:new Date().toISOString(),settings,expenses,categories,catBudgets,topUps,prefs};
+    const payload={type:"ledger-backup",version:5,exportedAt:new Date().toISOString(),settings,expenses,categories,catBudgets,topUps,balance,piggy,recurring,prefs};
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");a.href=url;a.download=`ledger-backup-${today}.json`;
@@ -1941,8 +2274,8 @@ function App(){
     const rows=[["Date","Amount","Currency","Category","Note"]];
     const sorted=[...expenses].sort((a,b)=>(a.date<b.date?-1:a.date>b.date?1:a.id-b.id));
     for(const e of sorted){
-      const cat=cats.find(c=>c.id===e.category);
-      rows.push([e.date,e.amount.toFixed(2),cur,cat?.label||e.category,(e.note||"").replace(/"/g,'""')]);
+      const catL=expCats(e).map(id=>(cats.find(c=>c.id===id)||{}).label||id).join(" + ");
+      rows.push([e.date,e.amount.toFixed(2),cur,catL,(e.note||"").replace(/"/g,'""')]);
     }
     const csv=rows.map(r=>r.map(c=>`"${c}"`).join(",")).join("\n");
     const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
@@ -1963,6 +2296,9 @@ function App(){
         if(data.categories)persistCats(data.categories);
         if(data.catBudgets)persistCatBudgets(data.catBudgets);
         if(Array.isArray(data.topUps))persistTopUps(data.topUps);
+        if(data.balance&&typeof data.balance==='object'&&!Array.isArray(data.balance)&&typeof data.balance.start==='number')persistBalance(data.balance);
+        if(data.piggy&&typeof data.piggy==='object'&&!Array.isArray(data.piggy)&&typeof data.piggy.target==='number'&&typeof data.piggy.saved==='number')persistPiggy(data.piggy);
+        if(Array.isArray(data.recurring)&&data.recurring.every(r=>r&&typeof r.amount==='number'&&typeof r.type==='string'))persistRecurring(data.recurring);
         if(data.prefs)persistPrefs({...prefs,...data.prefs});
         persistExpenses(data.expenses);
         showToast(`Restored ${data.expenses.length} entries.`,"success");
@@ -2019,10 +2355,13 @@ function App(){
     showToast(`Category "${name}" added.`,"success");
   };
   const removeCategory=id=>{
-    if(expenses.some(e=>e.category===id)){showToast("Can't delete — expenses use this category.","error");return}
+    if(expenses.some(e=>expCats(e).includes(id))){showToast("Can't delete — expenses use this category.","error");return}
     const updated=categories.filter(c=>c.id!==id);
     persistCats(updated);
-    if(category===id&&updated.length>0)setCategory(updated[0].id);
+    if(selCats.includes(id))setSelCats(prev=>{
+      const next=prev.filter(x=>x!==id);
+      return next.length?next:(updated[0]?[updated[0].id]:["food"]);
+    });
     showToast("Category removed.");
   };
 
@@ -2061,7 +2400,7 @@ function App(){
   const handleClearAll=()=>setConfirm({
     title:"Delete everything?",
     msg:"This removes all logged expenses, budget settings, and preferences. Download a backup first if you want to keep your data.",
-    onConfirm:()=>{persistExpenses([]);persistSettings(null);persistCats(DEFAULT_CATS);persistCatBudgets({});persistTopUps([]);setConfirm(null);showToast("All data cleared.","success")},
+    onConfirm:()=>{persistExpenses([]);persistSettings(null);persistCats(DEFAULT_CATS);persistCatBudgets({});persistTopUps([]);persistBalance({start:0});persistPiggy({target:0,saved:0});persistRecurring([]);setConfirm(null);showToast("All data cleared.","success")},
     onCancel:()=>setConfirm(null)
   });
 
@@ -2131,15 +2470,15 @@ function App(){
     {id:'add',title:'Add new expense',icon:I.Plus,kbd:'⌘N',run:()=>{document.querySelector('.amount-field')?.focus()}},
     {id:'theme',title:'Open theme & customization',icon:I.Palette,kbd:'⌘,',run:()=>{setDrawerTab('theme');setShowDrawer(true)}},
     {id:'catalog',title:'Manage categories',icon:I.Wallet,run:()=>{setDrawerTab('cats');setShowDrawer(true)}},
-    {id:'budget',title:'Edit budget settings',icon:I.Settings,run:()=>{if(settings){setDraftBudget(String(settings.monthlyBudget));setDraftDays(String(settings.periodDays));setDraftStartDate(settings.startDate);setShowSetup(true)}}},
-    {id:'topup',title:'Top up budget',icon:I.Zap,run:()=>{if(settings)setShowTopUp(true)}},
+    {id:'budget',title:'Edit budget settings',icon:I.Settings,run:()=>{if(settings){setDraftBudget(String(settings.monthlyBudget));setDraftDays(String(settings.periodDays));setDraftStartDate(settings.startDate);setDraftBalance(String(balance?.start||0));setShowSetup(true)}}},
+    {id:'topup',title:balancesOn?'Move money to budget':'Top up budget',icon:balancesOn?I.Wallet:I.Zap,run:()=>{if(settings){setMoveMode("budget");setShowTopUp(true)}}},
     {id:'darklight',title:isDark?'Switch to light mode':'Switch to dark mode',icon:isDark?I.Sun:I.Moon,run:toggleLightDark},
     {id:'backup',title:'Download backup (JSON)',icon:I.Download,run:exportData},
     {id:'csv',title:'Export as CSV',icon:I.Download,run:exportCSV},
     {id:'restore',title:'Restore from backup',icon:I.Upload,run:triggerImport},
     {id:'compact',title:prefs.compact?'Comfortable density':'Compact density',icon:I.Chart,run:()=>persistPrefs({...prefs,compact:!prefs.compact})},
     {id:'clear',title:'Clear all data',icon:I.Trash,run:handleClearAll},
-  ],[isDark,settings,prefs,expenses]);
+  ],[isDark,settings,prefs,expenses,balance]);
 
   /* ─── Keyboard ─── */
   useEffect(()=>{
@@ -2181,8 +2520,8 @@ function App(){
      RENDER
      ═══════════════════════════════════════════ */
   /* ─── Reorderable cards ─── */
-  const DEFAULT_CARD_ORDER=['log','breakdown','trend','history','backup'];
-  const cardOrder=(prefs.cardOrder&&prefs.cardOrder.length===5)?prefs.cardOrder:DEFAULT_CARD_ORDER;
+  const DEFAULT_CARD_ORDER=['log','breakdown','trend','history','auto','piggy','backup'];
+  const cardOrder=(prefs.cardOrder&&prefs.cardOrder.length===7?prefs.cardOrder:DEFAULT_CARD_ORDER).filter(id=>balancesOn||id!=='piggy');
   const moveCard=(id,dir)=>{
     const cur=cardOrder;
     const idx=cur.indexOf(id);
@@ -2258,11 +2597,11 @@ function App(){
                 <div className="field-label">Date</div>
                 <input className="input mono" type="date" value={entryDate} max={today} onChange={e=>setEntryDate(e.target.value)} style={{marginBottom:8}}/>
 
-                <div className="field-label">Category</div>
+                <div className="field-label">Categories <span style={{color:'var(--text-muted)',fontWeight:400}}>— pick one or more</span></div>
                 <div className="cat-pills">
                   {cats.map(c=>(
-                    <button key={c.id} className={`cat-pill ${category===c.id?"active":""}`}
-                      onClick={()=>setCategory(c.id)} style={{'--cat-color':c.color}}>
+                    <button key={c.id} className={`cat-pill ${selCats.includes(c.id)?"active":""}`}
+                      onClick={()=>toggleSelCat(c.id)} style={{'--cat-color':c.color}}>
                       <span className="cat-dot"/> {c.label}
                     </button>
                   ))}
@@ -2418,6 +2757,16 @@ function App(){
                 </div>
               ):(
               <>
+              <div className="cat-pills" style={{marginBottom:8}}>
+                <button className={`cat-pill ${trendSeries.includes("__total__")?"active":""}`} onClick={()=>toggleTrendSeries("__total__")} style={{'--cat-color':theme.accent}}>
+                  <span className="cat-dot"/> Total
+                </button>
+                {cats.map(c=>(
+                  <button key={c.id} className={`cat-pill ${trendSeries.includes(c.id)?"active":""}`} onClick={()=>toggleTrendSeries(c.id)} style={{'--cat-color':c.color}}>
+                    <span className="cat-dot"/> {c.label}
+                  </button>
+                ))}
+              </div>
               <div className="trend-chart">
                 <svg className="trend-svg" viewBox={`0 0 ${trendData.length*40} 160`} preserveAspectRatio="none">
                   <g className="trend-grid">
@@ -2430,41 +2779,45 @@ function App(){
                       y1={20+(1-Math.min(1,dailyBudget/trendMax))*120}
                       y2={20+(1-Math.min(1,dailyBudget/trendMax))*120} vectorEffect="non-scaling-stroke"/>
                   )}
-                  {(()=>{
-                    const pts=trendData.map((d,i)=>{
-                      const x=i*40+20;
-                      const y=20+(1-Math.min(1,d.spent/trendMax))*120;
-                      return{x,y,...d};
-                    });
+                  {trendSeriesList.map(s=>{
+                    const pts=trendData.map((d,i)=>({x:i*40+20,y:20+(1-Math.min(1,s.val(d)/trendMax))*120}));
                     const path=pts.map((p,i)=>`${i===0?'M':'L'} ${p.x} ${p.y}`).join(' ');
-                    const area=`${path} L ${pts[pts.length-1].x} 140 L ${pts[0].x} 140 Z`;
-                    return(
-                      <>
-                        <path className="trend-area" d={area}/>
-                        <path className="trend-line" d={path} vectorEffect="non-scaling-stroke"/>
-                      </>
-                    );
-                  })()}
+                    if(s.id==="__total__"){
+                      const area=`${path} L ${pts[pts.length-1].x} 140 L ${pts[0].x} 140 Z`;
+                      return(
+                        <g key={s.id}>
+                          <path className="trend-area" d={area} style={{fill:s.color}}/>
+                          <path className="trend-line" d={path} style={{stroke:s.color}} vectorEffect="non-scaling-stroke"/>
+                        </g>
+                      );
+                    }
+                    return <path key={s.id} className="trend-line" d={path} style={{stroke:s.color,strokeWidth:1.8}} vectorEffect="non-scaling-stroke"/>;
+                  })}
                 </svg>
                 {trendData.map((d,i)=>{
                   const x=i*40+20;
-                  const y=20+(1-Math.min(1,d.spent/trendMax))*120;
+                  const y=20+(1-Math.min(1,d.total/trendMax))*120;
                   const xPct=(x/(trendData.length*40))*100;
                   const yPct=(y/160)*100;
                   return(
                     <div key={i} className="trend-dot-marker" style={{left:`${xPct}%`,top:`${yPct}%`}}
-                      onMouseEnter={()=>setTrendHover({x,y,...d,idx:i})}
+                      onMouseEnter={()=>setTrendHover({day:d,idx:i})}
                       onMouseLeave={()=>setTrendHover(null)}/>
                   );
                 })}
-                {trendHover&&(
-                  <div className="trend-tip" style={{left:`${(trendHover.idx+0.5)/trendData.length*100}%`,top:`${trendHover.y/160*100}%`}}>
-                    {relativeDate(trendHover.date,today)}: <strong>{MYR(trendHover.spent)}</strong>
+                {trendHover&&trendSeriesList.length>0&&(
+                  <div className="trend-tip" style={{left:`${(trendHover.idx+0.5)/trendData.length*100}%`,top:24,transform:'translateX(-50%)',whiteSpace:'normal'}}>
+                    <strong>{relativeDate(trendHover.day.date,today)}</strong>
+                    {trendSeriesList.map(s=>(
+                      <div key={s.id} style={{color:'var(--text-dim)'}}><span style={{color:s.color}}>●</span> {s.label}: {MYR(s.val(trendHover.day))}</div>
+                    ))}
                   </div>
                 )}
               </div>
               <div className="trend-legend">
-                <span><span className="legend-dot" style={{background:theme.accent}}/>Daily spend</span>
+                {trendSeriesList.map(s=>(
+                  <span key={s.id}><span className="legend-dot" style={{background:s.color}}/>{s.label}</span>
+                ))}
                 {dailyBudget>0&&<span><span className="legend-dot" style={{background:theme.warning}}/>Allowance ({MYR(dailyBudget)})</span>}
               </div>
               </>
@@ -2515,12 +2868,12 @@ function App(){
                     <div><div className="field-label">From</div><input className="input mono" type="date" value={dateFrom} max={dateTo||today} onChange={e=>setDateFrom(e.target.value)}/></div>
                     <div><div className="field-label">To</div><input className="input mono" type="date" value={dateTo} min={dateFrom} max={today} onChange={e=>setDateTo(e.target.value)}/></div>
                   </div>
-                  {filterCats.length>0&&<div className="hero-stat-note" style={{marginTop:8}}>Top-ups are hidden while a category filter is active.</div>}
+                  {filterCats.length>0&&<div className="hero-stat-note" style={{marginTop:8}}>Transfers are hidden while a category filter is active.</div>}
                 </div>
               )}
 
               <div className="history-summary">
-                <span>{historyList.length} {historyList.length===1?"entry":"entries"} · {MYR(historySpentTotal)} spent{historyToppedTotal>0?` · +${MYR(historyToppedTotal)} topped up`:""}</span>
+                <span>{historyList.length} {historyList.length===1?"entry":"entries"} · {MYR(historySpentTotal)} spent{historyToppedTotal!==0?` · ${historyToppedTotal>0?'+':''}${MYR(historyToppedTotal)} ${balancesOn?'moved to budget':'topped up'}`:""}</span>
                 {filterCats.length>0&&<span style={{color:'var(--text-muted)'}}>{filterCats.length} category filter{filterCats.length===1?"":"s"}</span>}
               </div>
 
@@ -2543,26 +2896,27 @@ function App(){
                     {g.items.map(e=>{
                       if(e.type==='topup'){
                         return(
-                          <div className="tx-row" key={`topup-${e.id}`} style={{'--cat-color':'var(--positive)'}}>
-                            <span className="tx-glyph"><I.Zap style={{width:15,height:15}}/></span>
+                          <div className="tx-row" key={`topup-${e.id}`} style={{'--cat-color':e.amount>=0?'var(--positive)':'var(--warning)'}}>
+                            <span className="tx-glyph">{e.amount>=0?(balancesOn?<I.Wallet style={{width:15,height:15}}/>:<I.Zap style={{width:15,height:15}}/>):<I.Wallet style={{width:15,height:15}}/>}</span>
                             <div className="tx-main">
-                              <div className="tx-cat">Top up</div>
+                              <div className="tx-cat">{e.amount>=0?(balancesOn?'Move to budget':'Top up'):'Return to balance'}</div>
                               {e.note&&<div className="tx-note">{e.note}</div>}
                             </div>
                             <span className="tx-date">{relativeDate(e.date,today)}</span>
-                            <span className="tx-amount" style={{color:'var(--positive)'}}>+{MYR(e.amount)}</span>
+                            <span className="tx-amount" style={{color:e.amount>=0?'var(--positive)':'var(--warning)'}}>{e.amount>=0?'+':''}{MYR(e.amount)}</span>
                             <div className="tx-actions">
-                              <button className="tx-action-btn danger" onClick={()=>removeTopUp(e.id)} title="Remove top-up"><I.Trash/></button>
+                              <button className="tx-action-btn danger" onClick={()=>removeTopUp(e.id)} title="Remove transfer"><I.Trash/></button>
                             </div>
                           </div>
                         );
                       }
-                      const cat=cats.find(c=>c.id===e.category);
+                      const es=expCats(e);
+                      const cat=cats.find(c=>c.id===es[0]);
                       return(
                         <div className="tx-row" key={e.id} style={{'--cat-color':cat?.color}}>
                           <span className="tx-glyph">{cat?.glyph}</span>
                           <div className="tx-main">
-                            <div className="tx-cat">{cat?.label||e.category}</div>
+                            <div className="tx-cat">{cat?.label||es[0]}{es.length>1&&<span style={{color:'var(--text-muted)',fontWeight:400}}> +{es.length-1}</span>}</div>
                             {e.note&&<div className="tx-note">{e.note}</div>}
                           </div>
                           <span className="tx-date">{relativeDate(e.date,today)}</span>
@@ -2580,6 +2934,123 @@ function App(){
               </div>
             </div>
   );
+  const cardPiggy=(
+            <div className="card fade-in">
+              <div className="card-title">
+                <span className="card-title-left">
+                  <span className="card-title-icon"><I.Target/></span>
+                  Piggy bank
+                  {piggyTarget>0&&<span className="card-title-count">{Math.round(piggyPct)}%</span>}
+                </span>
+                {!piggyTargetEdit&&(
+                  <button className="link-btn" onClick={()=>{setPiggyTargetDraft(piggyTarget>0?String(piggyTarget):"");setPiggyTargetEdit(true)}}>Set goal</button>
+                )}
+              </div>
+              <div className="piggy-wrap">
+                <div className="piggy-stage">
+                  <div style={{width:130,maxWidth:'45%',flexShrink:0}}>
+                    <img className={prefs.piggyTexture?"piggy-img":"piggy-img default"} src={prefs.piggyTexture||PIGGY_GIF} alt="Piggy bank"/>
+                  </div>
+                  <div className="piggy-info">
+                    {piggyTargetEdit?(
+                      <div className="currency-row">
+                        <input className="input mono" type="number" inputMode="decimal" placeholder="200" value={piggyTargetDraft} onChange={e=>setPiggyTargetDraft(e.target.value)} onKeyDown={e=>e.key==='Enter'&&savePiggyTarget()} autoFocus/>
+                        <button className="btn btn-sm" onClick={savePiggyTarget} title="Save goal"><I.Check/></button>
+                        <button className="btn btn-ghost btn-sm" onClick={()=>setPiggyTargetEdit(false)} title="Cancel"><I.Close/></button>
+                      </div>
+                    ):(
+                      <div className="totals-row" style={{paddingBottom:0,borderBottom:'none',marginBottom:0}}>
+                        <span className="totals-label">{piggyTarget>0?"Saved":"No goal yet"}</span>
+                        <span className="totals-value mono" style={{fontSize:20}}>{MYR(piggySaved)}{piggyTarget>0&&<span style={{color:'var(--text-muted)',fontSize:12,fontWeight:600}}> / {MYR(piggyTarget)}</span>}</span>
+                      </div>
+                    )}
+                    <div className="piggy-progress" style={{marginTop:10}}>
+                      <div className="piggy-progress-fill" style={{width:`${piggyPct}%`}}/>
+                    </div>
+                    <div className="hero-stat-note" style={{marginTop:6}}>
+                      {piggyTarget>0
+                        ? (piggySaved>=piggyTarget?"Goal complete! 🎉":`${MYR(piggyTarget-piggySaved)} to go`)
+                        : "Set a goal and watch it fill up."}
+                    </div>
+                    <div className="piggy-actions" style={{marginTop:10}}>
+                      <button className="btn btn-secondary btn-sm" onClick={()=>setPiggyOpen(o=>!o)}><I.Plus/> Add</button>
+                      <button className="btn btn-ghost btn-sm" onClick={breakPiggy} disabled={piggySaved<=0}>Break</button>
+                    </div>
+                    {piggyOpen&&(
+                      <div className="piggy-amt">
+                        <input className="input mono" type="number" inputMode="decimal" placeholder="20" value={piggyAmount} onChange={e=>setPiggyAmount(e.target.value)} onKeyDown={e=>e.key==='Enter'&&depositPiggy()} autoFocus/>
+                        <button className="btn btn-sm" onClick={depositPiggy}>Add</button>
+                        <button className="btn btn-ghost btn-sm" onClick={()=>setPiggyOpen(false)}><I.Close/></button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+  );
+  const cardAuto=(
+            <div className="card fade-in">
+              <div className="card-title">
+                <span className="card-title-left">
+                  <span className="card-title-icon"><I.Zap/></span>
+                  Automations
+                  {recurring.length>0&&<span className="card-title-count">({recurring.length})</span>}
+                </span>
+              </div>
+              <div className="setup-form">
+                <div className="filter-row">
+                  <select className="input" value={autoType} onChange={e=>setAutoType(e.target.value)}>
+                    <option value="expense">Spending</option>
+                    <option value="budget">Top up budget</option>
+                    {balancesOn&&<option value="balance">Top up balance</option>}
+                  </select>
+                  <input className="input mono" type="number" inputMode="decimal" placeholder="Amount" value={autoAmount} onChange={e=>setAutoAmount(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addAutomation()}/>
+                </div>
+                <div className="filter-row">
+                  {autoType==='expense'&&(
+                    <select className="input" value={autoCat} onChange={e=>setAutoCat(e.target.value)}>
+                      {cats.map(c=><option key={c.id} value={c.id}>{c.glyph} {c.label}</option>)}
+                    </select>
+                  )}
+                  <select className="input" value={autoFreq} onChange={e=>setAutoFreq(e.target.value)}>
+                    {Object.entries(FREQ_OPTIONS).map(([k,l])=><option key={k} value={k}>{l}</option>)}
+                  </select>
+                  <input className="input mono" type="date" value={autoStart} max={today} onChange={e=>setAutoStart(e.target.value)}/>
+                </div>
+                <div className="filter-row">
+                  <input className="input" type="text" placeholder="Note (optional)" value={autoNote} onChange={e=>setAutoNote(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addAutomation()}/>
+                  <button className="btn" onClick={addAutomation}><I.Plus/> Add</button>
+                </div>
+              </div>
+              {recurring.length>0?(
+                <div className="tx-list" style={{marginTop:12}}>
+                  {recurring.map(r=>{
+                    const cat=cats.find(c=>c.id===r.category);
+                    return(
+                      <div className="tx-row" key={r.id} style={{opacity:r.active?1:.45}}>
+                        <span className="tx-glyph">{r.type==='expense'?(cat?.glyph||'◌'):r.type==='budget'?(balancesOn?<I.Wallet style={{width:14,height:14}}/>:<I.Zap style={{width:14,height:14}}/>):<I.Plus style={{width:14,height:14}}/>}</span>
+                        <div className="tx-main">
+                          <div className="tx-cat">{FREQ_OPTIONS[r.freq]||r.freq} · {MYR(r.amount)} {r.type==='expense'?`· ${cat?.label||r.category}`:r.type==='budget'?'to budget':'to balance'}</div>
+                          {r.note&&<div className="tx-note">{r.note}</div>}
+                          <div className="auto-rule-note">Started {relativeDate(r.start,today)} · {nextRun(r)}</div>
+                        </div>
+                        <div className="tx-actions">
+                          <button className={`toggle ${r.active?'on':''}`} onClick={()=>toggleAutomation(r)} title={r.active?"Pause":"Resume"}/>
+                          <button className="tx-action-btn danger" onClick={()=>removeAutomation(r.id)} title="Remove"><I.Trash/></button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ):(
+                <div className="empty" style={{marginTop:12}}>
+                  <div className="empty-illustration">↻</div>
+                  Repeating entries appear here.
+                  <div className="empty-sub">e.g. rent on the 1st, salary on the 25th.</div>
+                </div>
+              )}
+            </div>
+  );
   const cardBackup=(
             <div className="card fade-in">
               <div className="card-title">
@@ -2592,8 +3063,8 @@ function App(){
                 <button className="btn btn-secondary" onClick={exportData}><I.Download/> Backup (JSON)</button>
                 <button className="btn btn-secondary" onClick={exportCSV}><I.Download/> Export CSV</button>
                 <button className="btn btn-ghost" onClick={triggerImport}><I.Upload/> Load backup</button>
-                <button className="btn btn-ghost" onClick={()=>{setDraftBudget(String(settings.monthlyBudget));setDraftDays(String(settings.periodDays));setDraftStartDate(settings.startDate);setShowSetup(true)}}><I.Edit/> Edit budget</button>
-                <button className="btn btn-ghost" onClick={()=>setShowTopUp(true)}><I.Zap/> Top up budget</button>
+                <button className="btn btn-ghost" onClick={()=>{setDraftBudget(String(settings.monthlyBudget));setDraftDays(String(settings.periodDays));setDraftStartDate(settings.startDate);setDraftBalance(String(balance?.start||0));setShowSetup(true)}}><I.Edit/> Edit budget</button>
+                <button className="btn btn-ghost" onClick={()=>{setMoveMode("budget");setShowTopUp(true)}}>{balancesOn?<I.Wallet/>:<I.Zap/>} {balancesOn?'Move money':'Top up'}</button>
               </div>
               <div className="danger-zone">
                 <span className="danger-zone-label">Your data is stored locally in your browser. Nothing is sent anywhere.</span>
@@ -2601,8 +3072,8 @@ function App(){
               </div>
             </div>
   );
-  const CARD_LABELS={log:'Log a spend',breakdown:'Category breakdown',trend:'Spending trend',history:'History',backup:'Data & backup'};
-  const cardMap={log:cardLog,breakdown:cardBreakdown,trend:cardTrend,history:cardHistory,backup:cardBackup};
+  const CARD_LABELS={log:'Log a spend',breakdown:'Category breakdown',trend:'Spending trend',history:'History',auto:'Automations',piggy:'Piggy bank',backup:'Data & backup'};
+  const cardMap={log:cardLog,breakdown:cardBreakdown,trend:cardTrend,history:cardHistory,auto:cardAuto,piggy:cardPiggy,backup:cardBackup};
 
   return(
     <div className={`app ${prefs.compact?'compact':''}`} style={themeVars}>
@@ -2644,6 +3115,8 @@ function App(){
       <div className="shell">
         <input ref={fileInputRef} type="file" accept="application/json" style={{display:"none"}} onChange={handleImportFile}/>
         <input ref={wallpaperInputRef} type="file" accept="image/*,video/*" style={{display:"none"}} onChange={handleWallpaperFile}/>
+        <input ref={piggyTextureInputRef} type="file" accept="image/*" style={{display:"none"}} onChange={handlePiggyTextureFile}/>
+        <input ref={piggySoundInputRef} type="file" accept="audio/*" style={{display:"none"}} onChange={handlePiggySoundFile}/>
         {!settings?(
           /* ─── Setup ─── */
           <div className="setup-wrap">
@@ -2651,8 +3124,9 @@ function App(){
               <div className="setup-icon">L</div>
               <div className="setup-title">Welcome to Ledger</div>
               <div className="setup-sub">
-                Track your daily allowance and rollover savings.<br/>
-                All data stays private on your device.
+                {balancesOn
+                  ? <>Set a bank balance, track your daily allowance,<br/>and bank whatever you don't spend each day.</>
+                  : <>Set your budget, track your daily allowance,<br/>and carry over what you don't spend.</>}
               </div>
               <div className="setup-form">
                 <div>
@@ -2664,6 +3138,18 @@ function App(){
                     <input className="input mono" type="number" inputMode="decimal" placeholder="600" value={draftBudget} onChange={e=>setDraftBudget(e.target.value)} onKeyDown={e=>e.key==='Enter'&&saveSetup()} autoFocus/>
                   </div>
                 </div>
+                {balancesOn&&(
+                  <div>
+                    <div className="field-label">Starting bank balance</div>
+                    <div className="currency-row">
+                      <select className="input currency-select" value={draftCurrency} onChange={e=>setDraftCurrency(e.target.value)}>
+                        {Object.values(CURRENCIES).map(c=><option key={c.code} value={c.code}>{c.symbol} {c.code}</option>)}
+                      </select>
+                      <input className="input mono" type="number" inputMode="decimal" placeholder="1000" value={draftBalance} onChange={e=>setDraftBalance(e.target.value)} onKeyDown={e=>e.key==='Enter'&&saveSetup()}/>
+                    </div>
+                    <div className="hero-stat-note" style={{fontSize:12}}>The money you have right now — you can move it into your budget whenever you need it.</div>
+                  </div>
+                )}
                 <div>
                   <div className="field-label">Period length (days)</div>
                   <input className="input mono" type="number" inputMode="numeric" placeholder="30" value={draftDays} onChange={e=>setDraftDays(e.target.value)} onKeyDown={e=>e.key==='Enter'&&saveSetup()}/>
@@ -2693,8 +3179,8 @@ function App(){
               <div className="hero-glow"/>
               <div className="hero-top">
                 <div>
-                  <div className="hero-label">Available today</div>
-                  <div className={`hero-number mono ${todayRemaining<0?'negative':''}`}>{MYR(todayRemaining)}</div>
+                  <div className="hero-label">{heroLabel}</div>
+                  <div className={`hero-number mono ${heroValue<0?'negative':''}`}>{MYR(heroValue)}</div>
                   <div className="hero-meta">
                     {healthBadge()}
                     {streak>=2&&(
@@ -2702,13 +3188,16 @@ function App(){
                         <I.Fire style={{width:12,height:12}}/> {streak}-day streak
                       </span>
                     )}
+                    {balancesOn&&todaySaved>0&&(
+                      <span className="hero-badge pos"><I.Wallet style={{width:11,height:11}}/> {MYR(todaySaved)} saved today</span>
+                    )}
                     {topUpTotal>0&&(
-                      <span className="hero-badge pos"><I.Zap style={{width:11,height:11}}/> {MYR(topUpTotal)} topped up</span>
+                      <span className="hero-badge pos"><I.Zap style={{width:11,height:11}}/> {MYR(topUpTotal)} {balancesOn?'moved to budget':'topped up'}</span>
                     )}
                   </div>
                 </div>
-                <button className="btn btn-secondary btn-sm" onClick={()=>setShowTopUp(true)} title="Add extra funds to your balance">
-                  <I.Zap style={{width:14,height:14}}/> Top up
+                <button className="btn btn-secondary btn-sm" onClick={()=>{setMoveMode("budget");setShowTopUp(true)}} title={balancesOn?"Move money between your balance and this month's budget":"Add extra funds to your budget"}>
+                  {balancesOn?<I.Wallet style={{width:14,height:14}}/>:<I.Zap style={{width:14,height:14}}/>} {balancesOn?'Move money':'Top up'}
                 </button>
               </div>
               {todayRemaining<0&&(
@@ -2722,13 +3211,19 @@ function App(){
                   <div className="hero-stat-value">{MYR(dailyBudget)}</div>
                   <div className="hero-stat-note">{MYR(effectiveMonthlyBudget)} / {settings.periodDays}d</div>
                 </div>
-                <div>
-                  <div className="hero-stat-label">{runningBalance<0?"Total over":"Rollover"}</div>
-                  <div className="hero-stat-value" style={{color:runningBalance<0?'var(--negative)':'var(--positive)'}}>
-                    {MYR(Math.abs(runningBalance))}
+                {balancesOn?(
+                  <div>
+                    <div className="hero-stat-label">Saved to balance</div>
+                    <div className="hero-stat-value" style={{color:'var(--positive)'}}>{MYR(bankedSoFar)}</div>
+                    <div className="hero-stat-note">Leftover allowance banked so far</div>
                   </div>
-                  <div className="hero-stat-note">{runningBalance<0?"Spent over allowance":"Banked from savings"}</div>
-                </div>
+                ):(
+                  <div>
+                    <div className="hero-stat-label">{runningBalance<0?"Total over":"Rollover"}</div>
+                    <div className="hero-stat-value" style={{color:runningBalance<0?'var(--negative)':'var(--positive)'}}>{MYR(Math.abs(runningBalance))}</div>
+                    <div className="hero-stat-note">{runningBalance<0?"Spent over allowance":"Unspent allowance carries over"}</div>
+                  </div>
+                )}
                 <div>
                   <div className="hero-stat-label">Avg / day</div>
                   <div className="hero-stat-value">{MYR(avgDailySpend)}</div>
@@ -2753,7 +3248,7 @@ function App(){
                 </div>
                 <div className="strip">
                   {dayCells.map(c=>{
-                    const pct=c.isFuture?8:Math.max(8,Math.min(100,(c.spent/(dailyBudget*1.6))*100));
+                    const pct=c.isFuture?8:Math.max(8,Math.min(100,(c.spent/((dailyBudget||1)*1.6))*100));
                     let color=theme.borderStrong;
                     /* Warn as soon as 3 or less is left for the day; red only once well over. */
                     if(!c.isFuture)color=c.delta>3?theme.positive:c.delta>=-dailyBudget*0.4?theme.warning:theme.negative;
@@ -2818,6 +3313,18 @@ function App(){
                       <input className="input mono" type="number" inputMode="decimal" value={draftBudget} onChange={e=>setDraftBudget(e.target.value)}/>
                     </div>
                   </div>
+                  {balancesOn&&(
+                    <div>
+                      <div className="field-label">Bank balance</div>
+                      <div className="currency-row">
+                        <select className="input currency-select" value={cur} onChange={e=>persistPrefs({...prefs,currency:e.target.value})}>
+                          {Object.values(CURRENCIES).map(c=><option key={c.code} value={c.code}>{c.symbol} {c.code}</option>)}
+                        </select>
+                        <input className="input mono" type="number" inputMode="decimal" value={draftBalance} onChange={e=>setDraftBalance(e.target.value)}/>
+                      </div>
+                      <div className="hero-stat-note" style={{fontSize:12}}>Your bank balance. Transfers to the budget come out of this; leftover allowance is banked back into it.</div>
+                    </div>
+                  )}
                   <div>
                     <div className="field-label">Period length (days)</div>
                     <input className="input mono" type="number" inputMode="numeric" value={draftDays} onChange={e=>setDraftDays(e.target.value)}/>
@@ -2837,45 +3344,75 @@ function App(){
           </>
         )}
 
-        {/* Top Up Drawer */}
+        {/* Move Money / Top Up Drawer */}
         {showTopUp&&settings&&(
           <>
             <div className="drawer-overlay" onClick={()=>setShowTopUp(false)}/>
             <div className="drawer" style={{width:420}}>
               <div className="drawer-header">
-                <span className="drawer-title"><I.Zap style={{width:15,height:15,verticalAlign:-2,marginRight:6}}/>Top up budget</span>
+                <span className="drawer-title">{balancesOn?<I.Wallet style={{width:15,height:15,verticalAlign:-2,marginRight:6}}/>:<I.Zap style={{width:15,height:15,verticalAlign:-2,marginRight:6}}/>}{balancesOn?'Money':'Top up budget'}</span>
                 <button className="icon-btn" onClick={()=>setShowTopUp(false)}><I.Close/></button>
               </div>
               <div className="drawer-body">
-                <div className="setup-form">
+                {balancesOn&&(
+                  <>
+                    <div className="drawer-tabs">
+                      <button className={`drawer-tab ${moveMode==='budget'?'active':''}`} onClick={()=>setMoveMode('budget')}>To budget</button>
+                      <button className={`drawer-tab ${moveMode==='return'?'active':''}`} onClick={()=>setMoveMode('return')}>To balance</button>
+                      <button className={`drawer-tab ${moveMode==='add'?'active':''}`} onClick={()=>setMoveMode('add')}>Add balance</button>
+                      <button className={`drawer-tab ${moveMode==='withdraw'?'active':''}`} onClick={()=>setMoveMode('withdraw')}>Withdraw balance</button>
+                    </div>
+                    <div className="totals-row" style={{marginTop:14}}>
+                      <span className="totals-label">Balance</span>
+                      <span className="totals-value mono">{MYR(bankBalance)}</span>
+                    </div>
+                    <div className="totals-row">
+                      <span className="totals-label">After</span>
+                      <span className="totals-value mono">
+                        {MYR((moveMode==='return'||moveMode==='add')
+                          ? bankBalance+(parseFloat(topUpAmount)||0)
+                          : bankBalance-(parseFloat(topUpAmount)||0))}
+                      </span>
+                    </div>
+                  </>
+                )}
+                <div className="setup-form" style={{marginTop:balancesOn?14:0}}>
                   <div>
-                    <div className="field-label">Amount to add</div>
+                    <div className="field-label">{!balancesOn?'Amount to add':moveMode==='budget'?"Amount to move to budget":moveMode==='return'?"Amount to return to balance":moveMode==='withdraw'?"Amount to withdraw":"Amount to add"}</div>
                     <div className="currency-row">
                       <select className="input currency-select" value={cur} disabled>
                         <option>{CURRENCIES[cur]?.symbol||cur}</option>
                       </select>
-                      <input className="input mono" type="number" inputMode="decimal" placeholder="50" value={topUpAmount} onChange={e=>setTopUpAmount(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addTopUp()} autoFocus/>
+                      <input className="input mono" type="number" inputMode="decimal" placeholder="50" value={topUpAmount} onChange={e=>setTopUpAmount(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submitMoney()} autoFocus/>
                     </div>
                   </div>
-                  <div>
-                    <div className="field-label">Note (optional)</div>
-                    <input className="input" type="text" placeholder="e.g. bonus, birthday money" value={topUpNote} onChange={e=>setTopUpNote(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addTopUp()}/>
-                  </div>
+                  {(!balancesOn||moveMode==='budget'||moveMode==='return')&&(
+                    <div>
+                      <div className="field-label">Note (optional)</div>
+                      <input className="input" type="text" placeholder={!balancesOn?"e.g. bonus, birthday money":moveMode==='return'?"e.g. took out the extra food money":"e.g. extra cash for food"} value={topUpNote} onChange={e=>setTopUpNote(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submitMoney()}/>
+                    </div>
+                  )}
                   <div className="hero-stat-note" style={{fontSize:12}}>
-                    {topUpTarget==='month'
+                    {!balancesOn
                       ? "Added to your total monthly budget — your daily allowance rises for the rest of the period."
-                      : "Added straight to your rollover balance — it won't change your daily allowance, just gives you extra room to spend."}
+                      : moveMode==='budget'
+                        ? "Moved out of your balance into this month's budget — your daily allowance rises for the rest of the period."
+                        : moveMode==='return'
+                          ? "Moves money from your budget back to your balance — you can only take back what you moved in."
+                          : moveMode==='withdraw'
+                            ? "Removes money from your balance, e.g. to spend it elsewhere — it stays gone even if you stay under budget."
+                            : "Money you add from outside the app — it raises your balance and is protected from spending."}
                   </div>
                 </div>
-                {topUps.length>0&&(
+                {(!balancesOn||moveMode==='budget'||moveMode==='return')&&topUps.length>0&&(
                   <div style={{marginTop:20}}>
-                    <div className="field-label" style={{marginBottom:8}}>Recent top-ups</div>
+                    <div className="field-label" style={{marginBottom:8}}>Recent {balancesOn?'transfers':'top-ups'}</div>
                     <div className="tx-list">
                       {[...topUps].reverse().slice(0,8).map(t=>(
-                        <div className="tx-row" key={t.id}>
-                          <span className="tx-glyph"><I.Zap style={{width:14,height:14}}/></span>
+                        <div className="tx-row" key={t.id} style={{'--cat-color':t.amount<0?'var(--warning)':'var(--positive)'}}>
+                          <span className="tx-glyph">{t.amount>=0?(balancesOn?<I.Wallet style={{width:14,height:14}}/>:<I.Zap style={{width:14,height:14}}/>):<I.Wallet style={{width:14,height:14}}/>}</span>
                           <div className="tx-main">
-                            <div className="tx-cat">{MYR(t.amount)}</div>
+                            <div className="tx-cat">{t.amount>=0?MYR(t.amount):'-'+MYR(Math.abs(t.amount))}</div>
                             {t.note&&<div className="tx-note">{t.note}</div>}
                           </div>
                           <span className="tx-date">{relativeDate(t.date,today)}</span>
@@ -2889,7 +3426,9 @@ function App(){
                 )}
               </div>
               <div className="drawer-footer" style={{display:'flex',gap:8}}>
-                <button className="btn" style={{flex:1}} onClick={addTopUp}><I.Plus/> Add funds</button>
+                <button className="btn" style={{flex:1}} onClick={submitMoney}>
+                  <I.Plus/> {!balancesOn?'Add funds':moveMode==='budget'?'Move to budget':moveMode==='return'?'Return to balance':moveMode==='withdraw'?'Withdraw':'Add to balance'}
+                </button>
                 <button className="btn btn-ghost" onClick={()=>setShowTopUp(false)}>Cancel</button>
               </div>
             </div>
@@ -3228,18 +3767,63 @@ function App(){
                       <button className={`toggle ${prefs.tilt?'on':''}`} onClick={()=>persistPrefs({...prefs,tilt:!prefs.tilt})} title="Toggle 3D tilt"/>
                     </div>
 
-                    <div className="section-title">Top-ups</div>
+                    <div className="section-title">Balance</div>
                     <div className="toggle-row">
                       <div>
-                        <div className="toggle-label">Add top-ups to the monthly budget</div>
+                        <div className="toggle-label">Bank balance system</div>
                         <div className="toggle-desc">
-                          {topUpTarget==='month'
-                            ? "On — a top-up raises your total monthly budget and daily allowance for the whole period."
-                            : "Off — a top-up boosts that day's rollover savings and carries over as extra room to spend."}
+                          {balancesOn
+                            ? "On — keep a balance, move money to your budget, and bank leftover allowance at the end of each day."
+                            : "Off — plain budgeting without a balance or transfers."}
                         </div>
                       </div>
-                      <button className={`toggle ${topUpTarget==='month'?'on':''}`} onClick={()=>persistPrefs({...prefs,topUpTarget:topUpTarget==='month'?'day':'month'})} title="Toggle top-up destination"/>
+                      <button className={`toggle ${balancesOn?'on':''}`} onClick={()=>persistPrefs({...prefs,balancesEnabled:!balancesOn})} title="Toggle bank balance system"/>
                     </div>
+                    {balancesOn&&(
+                      <div style={{marginTop:12}}>
+                        <div className="field-label" style={{marginBottom:8}}>Hero shows</div>
+                        <div className="drawer-tabs">
+                          <button className={`drawer-tab ${heroMode==='daily'?'active':''}`} onClick={()=>persistPrefs({...prefs,heroMode:'daily'})}>Daily allowance</button>
+                          <button className={`drawer-tab ${heroMode==='balance'?'active':''}`} onClick={()=>persistPrefs({...prefs,heroMode:'balance'})}>Balance</button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="section-title">Piggy bank</div>
+                    {balancesOn?(
+                      <>
+                        <div className="section-desc" style={{marginTop:-4,marginBottom:8}}>Texture</div>
+                        <div className="backup-grid">
+                          <button className="btn btn-secondary" onClick={triggerPiggyTextureUpload}><I.Upload/> Custom texture</button>
+                          {prefs.piggyTexture&&<button className="btn btn-ghost" onClick={()=>persistPrefs({...prefs,piggyTexture:null})}><I.Trash/> Remove</button>}
+                        </div>
+                        <div className="section-desc" style={{marginTop:8}}>No custom texture? The flying piggy rides in by default.</div>
+                        <div className="toggle-row">
+                          <div>
+                            <div className="toggle-label">Deposit sounds</div>
+                            <div className="toggle-desc">Coin effects when you add money, plus a fanfare when the goal is complete.</div>
+                          </div>
+                          <button className={`toggle ${prefs.piggySound!==false?'on':''}`} onClick={()=>persistPrefs({...prefs,piggySound:prefs.piggySound===false})} title="Toggle piggy bank sounds"/>
+                        </div>
+                        {prefs.piggySound!==false&&(
+                          <div style={{marginTop:12}}>
+                            <div className="field-label" style={{marginBottom:8}}>Sound</div>
+                            <div className="drawer-tabs">
+                              <button className={`drawer-tab ${(prefs.piggySoundId||'coin')==='coin'?'active':''}`} onClick={()=>persistPrefs({...prefs,piggySoundId:'coin'})}>Coin</button>
+                              <button className={`drawer-tab ${(prefs.piggySoundId||'coin')==='chime'?'active':''}`} onClick={()=>persistPrefs({...prefs,piggySoundId:'chime'})}>Chime</button>
+                              <button className={`drawer-tab ${(prefs.piggySoundId||'coin')==='custom'?'active':''}`} onClick={()=>{if(prefs.piggySoundCustom){persistPrefs({...prefs,piggySoundId:'custom'})}else{showToast("Upload a custom sound first.","info");triggerPiggySoundUpload()}}}>Custom</button>
+                            </div>
+                            <div className="backup-grid" style={{marginTop:8}}>
+                              <button className="btn btn-secondary" onClick={triggerPiggySoundUpload}><I.Upload/> Upload sound</button>
+                              {prefs.piggySoundCustom&&<button className="btn btn-ghost" onClick={()=>persistPrefs({...prefs,piggySoundCustom:null,piggySoundId:prefs.piggySoundId==='custom'?'coin':prefs.piggySoundId})}><I.Trash/> Remove</button>}
+                            </div>
+                            <button className="link-btn" style={{marginTop:8}} onClick={()=>playPiggySound(prefs.piggySoundId||'coin',prefs.piggySoundCustom)}>Preview sound</button>
+                          </div>
+                        )}
+                      </>
+                    ):(
+                      <div className="section-desc">Turn the bank balance system on to use the piggy bank.</div>
+                    )}
 
                     <div className="section-title">Currency</div>
                     <select className="input" value={cur} onChange={e=>persistPrefs({...prefs,currency:e.target.value})}>
@@ -3277,7 +3861,7 @@ function App(){
                         )}
                         <div className="section-desc" style={{marginTop:8}}>
                           {authUser
-                            ? "Your budget, expenses, top-ups, categories, theme and preferences sync automatically. The newest copy wins — edits from any device appear here."
+                            ? "Your budget, balance, expenses, transfers, categories, theme and preferences sync automatically. The newest copy wins — edits from any device appear here."
                             : "Sign in to back up and sync your budget across devices with your Google account. Your data stays private — only you can read your copy."}
                         </div>
                       </>
